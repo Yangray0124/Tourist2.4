@@ -17,12 +17,12 @@ from keys import yt_api_key
 import logging
 
 # 設定日誌等級為 DEBUG，並寫入到檔案
-logging.basicConfig(
-    level=logging.DEBUG,
-    filename='bot_debug.log',
-    filemode='w',
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+# logging.basicConfig(
+#     level=logging.DEBUG,
+#     filename='bot_debug.log',
+#     filemode='w',
+#     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+# )
 
 yt_dlp_options = {
     'format': 'best/bestaudio/worstaudio/worst',
