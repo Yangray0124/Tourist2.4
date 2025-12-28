@@ -148,11 +148,11 @@ class Chat(commands.Cog):
 
     @app_commands.command(name="版本", description="Tourist2.3")
     async def version(self, interaction: discord.Interaction):
-        await interaction.response.send_message(">>> 版本： **Tourist2.3**\n"
-                                                "更新日期： 2025/5/7\n"
+        await interaction.response.send_message(">>> 版本： **Tourist2.4**\n"
+                                                "更新日期： 2025/12/29\n"
                                                 "才藝： 智能聊天、cf功能、唱歌\n"
                                                 "贊助商： 郭老師贊助機器！\n"
-                                                "OpenSource： https://github.com/Yangray0124/Tourist2.3.git")
+                                                "OpenSource： https://github.com/Yangray0124/Tourist2.4.git")
 
     @tasks.loop(seconds=3)
     async def cf_clock(self):
