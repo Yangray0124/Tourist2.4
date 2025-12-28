@@ -97,8 +97,8 @@ js_image = {
 prompt = "請用繁體中文回答！\n\n"
 cf_focus_CD = 20
 
-gemini_model = "v1/models/gemini-1.5-flash"
-gemini_image_model = "v1/models/gemini-2.0-flash"
+gemini_model = "v1/models/gemini-2.5-flash-lite"
+gemini_image_model = "v1/models/gemini-2.5-flash-lite"
 
 
 def check(msg):

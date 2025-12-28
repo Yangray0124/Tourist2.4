@@ -30,7 +30,7 @@ yt_dlp_options = {
     'Referer': 'https://www.bilibili.com/',
     'Origin': 'https://www.bilibili.com'
     },
-    'cookiefile': 'cookies.txt'
+    'cookiefile': 'www.youtube.com_cookies.txt'
 }
 
 FFMPEG_OPTIONS = {'options': '-vn -reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5'}
