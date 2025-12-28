@@ -1,0 +1,7 @@
+discord.py
+requests
+yt-dlp
+beautifulsoup4
+google-api-python-client
+PyNaCl
+opencv-python

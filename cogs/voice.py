@@ -14,6 +14,16 @@ from bs4 import BeautifulSoup
 from googleapiclient.discovery import build  # google-api-python-client
 from keys import yt_api_key
 
+import logging
+
+# 設定日誌等級為 DEBUG，並寫入到檔案
+logging.basicConfig(
+    level=logging.DEBUG,
+    filename='bot_debug.log',
+    filemode='w',
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+
 yt_dlp_options = {
     'format': 'best/bestaudio/worstaudio/worst',
     'quiet': True,
@@ -30,7 +40,7 @@ yt_dlp_options = {
     'Referer': 'https://www.bilibili.com/',
     'Origin': 'https://www.bilibili.com'
     },
-    'cookiefile': 'www.youtube.com_cookies.txt'
+    'cookiefile': 'cookies.txt'
 }
 
 FFMPEG_OPTIONS = {'options': '-vn -reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5'}
@@ -38,8 +48,8 @@ YOUTUBE_API_SERVICE_NAME = "youtube"
 YOUTUBE_API_VERSION = "v3"
 youtube = build(YOUTUBE_API_SERVICE_NAME, YOUTUBE_API_VERSION, developerKey=yt_api_key)
 
-executable_path = "ffmpeg"
-# executable_path = "bin\\ffmpeg.exe"
+# executable_path = "ffmpeg"
+executable_path = "bin\\ffmpeg.exe"
 
 queue = []  # {music_url, title, yt_url, loop?}
 
@@ -61,7 +71,7 @@ def search_yt(url: str):
         ).execute()
         # print(res)
         if res is None:
-            return None, "Error1"
+            return None, "Error1", None
         # print(res["items"][0])
         url = "https://www.youtube.com/watch?v=" + res["items"][0]["id"]["videoId"]
 
@@ -69,7 +79,7 @@ def search_yt(url: str):
         try:
             info = ydl.extract_info(url, download=False)
         except:
-            return None, "Error2"
+            return None, "Error2", None
     # print(info)
     thumbnail = info["thumbnail"]
     return info["url"], info["title"], url

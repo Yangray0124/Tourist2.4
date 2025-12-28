@@ -334,7 +334,21 @@ class Chat(commands.Cog):
 
     async def cf_focus_update(self, channel: discord.TextChannel, params: dict):
         ID = params["ID"]
-        info = requests.get(f"https://codeforces.com/api/user.status?handle={ID}&from=1&count=10").json()
+
+        try:
+            # 加上 timeout 避免卡死，並檢查狀態碼
+            response = requests.get(f"https://codeforces.com/api/user.status?handle={ID}&from=1&count=10", timeout=5)
+
+            if response.status_code != 200:
+                print(f"CF API Error: {response.status_code}")
+                return  # 這次抓失敗，直接跳過，等下次迴圈再試
+
+            info = response.json()
+        except Exception as e:
+            print(f"Fetch failed for {ID}: {e}")
+            return  # 發生任何錯誤(連線失敗、解析失敗)都跳過
+
+        # info = requests.get(f"https://codeforces.com/api/user.status?handle={ID}&from=1&count=10", 5).json()
         l = []  # {problem_id, problem_idx, problem_name, problem_verdict}
         for i in range(10):
             if info["result"][i]["id"] == last_submission_id[ID]:
