@@ -13,6 +13,7 @@ from discord.app_commands import Choice
 from bs4 import BeautifulSoup
 from googleapiclient.discovery import build  # google-api-python-client
 from keys import yt_api_key
+import platform
 
 import logging
 
@@ -25,31 +26,38 @@ import logging
 # )
 
 yt_dlp_options = {
-    'format': 'best/bestaudio/worstaudio/worst',
+    # 'format': 'best/bestaudio/worstaudio/worst',
+    'format': 'bestaudio/best',
     'quiet': True,
     'no_warnings': True,
     'default_search': 'ytsearch',
-    'outtmpl': 'downloads/%(title)s.%(ext)s',
+    # 'outtmpl': 'downloads/%(title)s.%(ext)s',
     # 'postprocessors': [{
     #     'key': 'FFmpegExtractAudio',
     #     'preferredcodec': 'mp3',
     #     'preferredquality': '128',
     # }],
-    'http_headers': {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:89.0) Gecko/20100101 Firefox/91.0',
-    'Referer': 'https://www.bilibili.com/',
-    'Origin': 'https://www.bilibili.com'
-    },
+    # 'http_headers': {
+    # 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:89.0) Gecko/20100101 Firefox/91.0',
+    # 'Referer': 'https://www.bilibili.com/',
+    # 'Origin': 'https://www.bilibili.com'
+    # },
     'cookiefile': 'cookies.txt'
 }
 
-FFMPEG_OPTIONS = {'options': '-vn -reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5'}
+# FFMPEG_OPTIONS = {'options': '-vn -reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5'}
+FFMPEG_OPTIONS = {
+    'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -user_agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"',
+    'options': '-vn'
+}
 YOUTUBE_API_SERVICE_NAME = "youtube"
 YOUTUBE_API_VERSION = "v3"
 youtube = build(YOUTUBE_API_SERVICE_NAME, YOUTUBE_API_VERSION, developerKey=yt_api_key)
 
-# executable_path = "ffmpeg"
-executable_path = "bin\\ffmpeg.exe"
+if platform.system() == "Windows":
+    executable_path = "bin\\ffmpeg.exe"
+else:
+    executable_path = "ffmpeg"
 
 queue = []  # {music_url, title, yt_url, loop?}
 
@@ -58,6 +66,14 @@ def get_act():
     game = pen.readline()
     pen.close()
     return game
+
+def create_audio_source(audio_url: str):
+    return discord.FFmpegOpusAudio(
+        audio_url,
+        before_options="-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
+        options="-vn",
+        executable=executable_path
+    )
 
 
 def search_yt(url: str):
@@ -75,12 +91,19 @@ def search_yt(url: str):
         # print(res["items"][0])
         url = "https://www.youtube.com/watch?v=" + res["items"][0]["id"]["videoId"]
 
-    with YoutubeDL(yt_dlp_options) as ydl:
+    ydl_opts = {
+        "format": "bestaudio[protocol!=m3u8]/bestaudio",
+        "quiet": True,
+        "no_warnings": True,
+    }
+
+    with YoutubeDL(ydl_opts) as ydl:
         try:
             info = ydl.extract_info(url, download=False)
         except:
             return None, "Error2", None
-    # print(info)
+
+    print(info["url"])
     thumbnail = info["thumbnail"]
     return info["url"], info["title"], url
 
@@ -101,8 +124,13 @@ class Voice(commands.Cog):
 
         if queue[0]["loop"]: # 循環播放
             queue[0]["music_url"], queue[0]["title"], queue[0]["yt_url"] = search_yt(queue[0]["yt_url"])  # 重抓避免失效
-            self.vc.play(discord.FFmpegOpusAudio(queue[0]["music_url"], **FFMPEG_OPTIONS, executable=executable_path),
-                         after=lambda e: asyncio.run_coroutine_threadsafe(self.next(channel), self.bot.loop))
+            # _, queue[0]["title"], queue[0]["yt_url"] = search_yt(queue[0]["yt_url"])
+            # self.vc.play(discord.FFmpegOpusAudio(queue[0]["music_url"], **FFMPEG_OPTIONS, executable=executable_path),
+            #              after=lambda e: asyncio.run_coroutine_threadsafe(self.next(channel), self.bot.loop))
+            self.vc.play(
+                create_audio_source(queue[0]["music_url"]),
+                after=lambda e: asyncio.run_coroutine_threadsafe(self.next(channel), self.bot.loop)
+            )
             return
 
         print("pop")
@@ -121,8 +149,12 @@ class Voice(commands.Cog):
         queue[0]["music_url"], queue[0]["title"], queue[0]["yt_url"] = search_yt(queue[0]["yt_url"])  # 重抓避免失效
         # print(queue[0][0])
 
-        self.vc.play(discord.FFmpegOpusAudio(queue[0]["music_url"], **FFMPEG_OPTIONS, executable=executable_path),
-                     after=lambda e: asyncio.run_coroutine_threadsafe(self.next(channel), self.bot.loop))
+        # self.vc.play(discord.FFmpegOpusAudio(queue[0]["music_url"], **FFMPEG_OPTIONS, executable=executable_path),
+        #              after=lambda e: asyncio.run_coroutine_threadsafe(self.next(channel), self.bot.loop))
+        self.vc.play(
+            create_audio_source(queue[0]["music_url"]),
+            after=lambda e: asyncio.run_coroutine_threadsafe(self.next(channel), self.bot.loop)
+        )
         await channel.send(f"現在播放： [{queue[0]['title']}]({queue[0]['yt_url']})")
         await self.bot.change_presence(status=discord.Status.idle, activity=discord.Activity(type=discord.ActivityType.listening, name=queue[0]["title"]))
 
@@ -162,7 +194,7 @@ class Voice(commands.Cog):
         # await interaction.channel.send(m_url)
         print("m_title: ", m_title)
 
-        if not m_url:
+        if not yt_url:
             await interaction.followup.send("好像找不到捏")
             return
 
@@ -170,8 +202,12 @@ class Voice(commands.Cog):
             
             queue.append({"music_url": m_url, "title": m_title, "yt_url": yt_url, "loop": 循環播放.value})
             try:
-                self.vc.play(discord.FFmpegOpusAudio(queue[0]["music_url"], **FFMPEG_OPTIONS, executable=executable_path),
-                             after=lambda e: asyncio.run_coroutine_threadsafe(self.next(interaction.channel), self.bot.loop))#asyncio.run(self.next(interaction.channel))
+                # self.vc.play(discord.FFmpegOpusAudio(queue[0]["music_url"], **FFMPEG_OPTIONS, executable=executable_path),
+                #              after=lambda e: asyncio.run_coroutine_threadsafe(self.next(interaction.channel), self.bot.loop))#asyncio.run(self.next(interaction.channel))
+                self.vc.play(
+                    create_audio_source(queue[0]["music_url"]),
+                    after=lambda e: asyncio.run_coroutine_threadsafe(self.next(interaction.channel), self.bot.loop)
+                )
             except Exception as e:
                 await interaction.followup.send(e)
                 return

@@ -348,7 +348,7 @@ class Chat(commands.Cog):
             print(f"Fetch failed for {ID}: {e}")
             return  # 發生任何錯誤(連線失敗、解析失敗)都跳過
 
-        # info = requests.get(f"https://codeforces.com/api/user.status?handle={ID}&from=1&count=10", 5).json()
+        # info = requests.get(f"https://codeforces.com/api/user.status?handle={ID}&from=1&count=10").json()
         l = []  # {problem_id, problem_idx, problem_name, problem_verdict}
         for i in range(10):
             if info["result"][i]["id"] == last_submission_id[ID]:
