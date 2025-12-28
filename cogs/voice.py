@@ -95,6 +95,7 @@ def search_yt(url: str):
         "format": "bestaudio[protocol!=m3u8]/bestaudio",
         "quiet": True,
         "no_warnings": True,
+        'cookiefile': 'cookies.txt'
     }
 
     with YoutubeDL(ydl_opts) as ydl:
