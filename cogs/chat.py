@@ -1,4 +1,5 @@
 import base64
+import os
 
 import discord
 import time
@@ -403,6 +404,35 @@ class Chat(commands.Cog):
         for i in range(1, len(replies)):
             await msc.send(replies[i])
         print("cut:", f"len={len(replies)}")
+
+    @app_commands.command(name="查看空間", description="查看目前下載的音樂佔用了多少空間")
+    async def check_storage(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        folder = "./downloads"
+
+        if not os.path.exists(folder):
+            await interaction.followup.send("目前沒有下載任何檔案 (0 MB)。")
+            return
+
+        total_size = 0
+        file_count = 0
+
+        # 算出資料夾總大小
+        for dirpath, dirnames, filenames in os.walk(folder):
+            for f in filenames:
+                fp = os.path.join(dirpath, f)
+                # 跳過連結檔，只算實體檔案
+                if not os.path.islink(fp):
+                    total_size += os.path.getsize(fp)
+                    file_count += 1
+
+        # 換算單位 (Bytes -> MB -> GB)
+        if total_size < 1024 * 1024 * 1024:
+            size_str = f"{total_size / (1024 * 1024):.2f} MB"
+        else:
+            size_str = f"{total_size / (1024 * 1024 * 1024):.2f} GB"
+
+        await interaction.followup.send(f"📂 **快取狀態**\n- 檔案數量：{file_count} 首\n- 佔用空間：{size_str}")
 
     @app_commands.command(name="cf", description="查詢CodeForces的...")
     @app_commands.describe(選擇="選擇功能")
