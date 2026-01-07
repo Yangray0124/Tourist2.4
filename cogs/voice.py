@@ -28,6 +28,7 @@ import logging
 yt_dlp_options = {
     # 'format': 'best/bestaudio/worstaudio/worst',
     'format': 'bestaudio/best',
+    'outtmpl': './downloads/%(id)s.%(ext)s',
     'quiet': True,
     'no_warnings': True,
     'default_search': 'ytsearch',
@@ -68,12 +69,25 @@ def get_act():
     return game
 
 def create_audio_source(audio_url: str):
-    return discord.FFmpegOpusAudio(
-        audio_url,
-        before_options="-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
-        options="-vn",
-        executable=executable_path
-    )
+    if os.path.exists(audio_url):
+        print(f"[播放模式] 讀取本地硬碟檔案：{audio_url}")
+        # 本地檔案不需要 reconnect 參數，也不需要 headers，只要 -vn
+        return discord.FFmpegOpusAudio(
+            audio_url,
+            before_options="-vn",
+            options="-vn",
+            executable=executable_path
+        )
+    else:
+        # 網路串流模式 (給 m4a 用的)
+        print(f"[播放模式] 讀取網路串流")
+
+        return discord.FFmpegOpusAudio(
+            audio_url,
+            before_options="-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
+            options="-vn",
+            executable=executable_path
+        )
 
 
 def search_yt(url: str):
@@ -91,22 +105,41 @@ def search_yt(url: str):
         # print(res["items"][0])
         url = "https://www.youtube.com/watch?v=" + res["items"][0]["id"]["videoId"]
 
-    ydl_opts = {
-        "format": "bestaudio[protocol!=m3u8]/bestaudio",
-        "quiet": True,
-        "no_warnings": True,
-        'cookiefile': 'cookies.txt'
-    }
 
-    with YoutubeDL(ydl_opts) as ydl:
+    with YoutubeDL(yt_dlp_options) as ydl:
         try:
             info = ydl.extract_info(url, download=False)
-        except:
+
+            # 【關鍵判斷】是否為 m3u8 (HLS) 格式？
+            download_url = info.get('url', '')
+            protocol = info.get('protocol', '')
+            is_m3u8 = 'm3u8' in download_url or 'm3u8' in protocol
+
+            if is_m3u8:
+                print(f"⚠️ 偵測到 m3u8 (HLS) 格式！啟動下載模式以避免 403... ({info['title']})")
+
+                # 重新執行一次，這次開啟 download=True
+                # 因為設定了 outtmpl，它會自動下載到 ./downloads 資料夾
+                info = ydl.extract_info(url, download=True)
+
+                # 取得下載後的「硬碟路徑」
+                filename = ydl.prepare_filename(info)
+
+                # 回傳：本地路徑, 標題, 原始網址, (本地檔不需要headers)
+                return filename, info["title"], url
+
+            else:
+                print(f"✅ 偵測到一般格式 (m4a/webm)，使用直接串流。")
+                # 不是 m3u8，就照舊回傳網址和 headers
+                return info["url"], info["title"], url
+
+        except Exception as e:
+            print(f"Download/Info Error: {e}")
             return None, "Error2", None
 
-    print(info["url"])
-    thumbnail = info["thumbnail"]
-    return info["url"], info["title"], url
+    # print(info["url"])
+    # thumbnail = info["thumbnail"]
+    # return info["url"], info["title"], url
 
 
 class Voice(commands.Cog):
