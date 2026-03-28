@@ -1,5 +1,8 @@
 import base64
 import os
+import re
+import io
+import fitz  # PyMuPDF 的套件名稱是 fitz
 
 import discord
 import time
@@ -160,9 +163,17 @@ class Chat(commands.Cog):
         # print("clock")
         if len(cf_queue) == 0:
             return
-        function, interaction, params = cf_queue[0]["function"], cf_queue[0]["interaction"], cf_queue[0]["params"]
-        cf_queue.pop(0)
-        await function(interaction, params)
+        
+        # 先取出任務並移除
+        current_task = cf_queue.pop(0)
+        function, interaction, params = current_task["function"], current_task["interaction"], current_task["params"]
+        
+        # 加上 try...except 安全網，保證迴圈絕對不會死
+        try:
+            await function(interaction, params)
+        except Exception as e:
+            print(f"執行 {function.__name__} 時發生錯誤: {e}")
+            
         return
 
     @tasks.loop(seconds=cf_focus_CD)
@@ -237,10 +248,13 @@ class Chat(commands.Cog):
         if len(res) == 0:
             await interaction.followup.send("他還沒參加過比賽喔")
             return
+        current_rating = res[0].get("rating", "Unrated")
+        max_rating = res[-1].get("maxRating", "Unrated")
+
         if ID == "tourist":
-            await interaction.followup.send(f'## {ID}\n- 目前分數：{res[0]["rating"]}\n- 最高分數：{res[-1]["maxRating"]}:v:')
+            await interaction.followup.send(f'## {ID}\n- 目前分數：{current_rating}\n- 最高分數：{max_rating} :v:')
         else:
-            await interaction.followup.send(f'## {ID}\n- 目前分數：{res[0]["rating"]}\n- 最高分數：{res[-1]["maxRating"]}')
+            await interaction.followup.send(f'## {ID}\n- 目前分數：{current_rating}\n- 最高分數：{max_rating}')
 
     async def cf_user_contest(self, interaction: discord.Interaction, params: dict):
         print("cf_user_contest")
@@ -272,9 +286,16 @@ class Chat(commands.Cog):
         for i in l:
             contestid = i["id"]
             endtime = i["startTimeSeconds"] + i["durationSeconds"]
-            subs = requests.get(
-                f"https://codeforces.com/api/contest.status?contestId={contestid}&handle={ID}&from=1&count=500")
-            res = subs.json()["result"]
+            subs = requests.get(f"https://codeforces.com/api/contest.status?contestId={contestid}&handle={ID}&from=1&count=500", timeout=5)
+            if subs.status_code != 200:
+                continue # 抓不到提交紀錄就跳過這個比賽
+            res = subs.json().get("result", [])
+
+            # 下面的 rating 也是一樣：
+            rating = requests.get(f"https://codeforces.com/api/user.rating?handle={ID}", timeout=5)
+            if rating.status_code == 200:
+                res = rating.json().get("result", [])
+                # 接下來再跑 for j in res: ...
             if len(res) == 0:
                 continue
             ok = True
@@ -319,49 +340,75 @@ class Chat(commands.Cog):
         print("cf_focus_setup")
         ID = params["ID"]
         sec = params["sec"]
-        info = requests.get(f"https://codeforces.com/api/user.status?handle={ID}&from=1&count=10")
-        if info.status_code != 200:
-            await interaction.followup.send("查不到這個人捏")
+        
+        try:
+            # 加上 timeout 保護
+            info_req = requests.get(f"https://codeforces.com/api/user.status?handle={ID}&from=1&count=10", timeout=5)
+            if info_req.status_code != 200:
+                await interaction.followup.send("查不到這個人捏")
+                return
+            
+            # 只轉一次 json
+            info = info_req.json()
+            
+        except Exception as e:
+            await interaction.followup.send("CF API 連線異常，請稍後再試！")
             return
-        info = info.json()
+
         for p in cf_focus_list:
             if p["ID"] == ID:
                 p["remain"] = sec
                 await interaction.followup.send(f"繼續關注 **{ID}** 成功，持續{sec//3600}小時")
                 return
+                
+        # 確認有紀錄再加入關注列表與賦值
+        if not info.get("result"):
+            await interaction.followup.send(f"**{ID}** 還沒有任何提交紀錄，無法關注喔！")
+            return
+            
         cf_focus_list.append({"ID": ID, "remain": sec, "channel": interaction.channel})
         last_submission_id[ID] = info["result"][0]["id"]
+        
         await interaction.followup.send(f"關注 **{ID}** 成功，持續{sec//3600}小時")
 
     async def cf_focus_update(self, channel: discord.TextChannel, params: dict):
         ID = params["ID"]
 
         try:
-            # 加上 timeout 避免卡死，並檢查狀態碼
             response = requests.get(f"https://codeforces.com/api/user.status?handle={ID}&from=1&count=10", timeout=5)
 
             if response.status_code != 200:
                 print(f"CF API Error: {response.status_code}")
-                return  # 這次抓失敗，直接跳過，等下次迴圈再試
+                return
 
             info = response.json()
+            
+            # 確保 API 真的是成功回傳，且有 result 欄位
+            if info.get("status") != "OK" or "result" not in info:
+                print(f"CF API 狀態異常: {info.get('comment', 'Unknown Error')}")
+                return
+
         except Exception as e:
             print(f"Fetch failed for {ID}: {e}")
-            return  # 發生任何錯誤(連線失敗、解析失敗)都跳過
+            return  
 
-        # info = requests.get(f"https://codeforces.com/api/user.status?handle={ID}&from=1&count=10").json()
-        l = []  # {problem_id, problem_idx, problem_name, problem_verdict}
-        for i in range(10):
-            if info["result"][i]["id"] == last_submission_id[ID]:
+        l = []  
+        # 取得實際回傳的筆數，最多 10 筆 (避免總提交次數不到 10 次的人報錯)
+        count = min(10, len(info["result"]))
+        
+        for i in range(count):
+            if info["result"][i]["id"] == last_submission_id.get(ID):
                 break
             l.append({"problem_id": info["result"][i]["id"],
                       "problem_idx": info["result"][i]["problem"]["index"],
                       "problem_name": info["result"][i]["problem"]["name"],
                       "problem_verdict": info["result"][i]["verdict"]})
+                      
         for i in range(len(l)):
             if l[i]["problem_verdict"] != "TESTING":
                 last_submission_id[ID] = l[i]["problem_id"]
                 break
+                
         for i in range(len(l)-1, -1, -1):
             verdict = l[i]["problem_verdict"]
             if verdict == "TESTING":
@@ -500,6 +547,69 @@ class Chat(commands.Cog):
     async def on_message(self, message: discord.Message):
         if message.author == self.bot.user:
             return
+        
+        # ------------------- PDF 擷取與預覽功能 -------------------
+        # 判斷訊息中是否包含特定關鍵字
+        if "檔案上傳完成" in message.content and "點我直接下載" in message.content:
+            # 使用正則表達式抓取檔名與網址
+            # 假設訊息格式為：檔名: `B13901080_myconv.m` 或 [點我直接下載](https://storage.to/r/...)
+            filename_match = re.search(r'檔名:\s*`?([^`\s]+)`?', message.content)
+            url_match = re.search(r'\[點我直接下載\]\((https?://[^\s\)]+)\)', message.content)
+            
+            # 如果對方機器人不是用 Markdown 隱藏網址，而是直接貼網址，可以用這行備用：
+            if not url_match:
+                url_match = re.search(r'(https?://storage\.to/[^\s\)]+)', message.content)
+
+            if filename_match and url_match:
+                filename = filename_match.group(1)
+                url = url_match.group(1)
+
+                # 確認附檔名是否為 .pdf (不分大小寫)
+                if filename.lower().endswith('.pdf'):
+                    try:
+                        # 告訴使用者正在處理中，可以加個表情符號
+                        await message.add_reaction('⏳')
+
+                        # 下載 PDF 到記憶體中 (不存入實體硬碟，節省空間)
+                        req = requests.get(url, timeout=15)
+                        if req.status_code == 200:
+                            pdf_bytes = req.content
+                            
+                            # 使用 PyMuPDF 讀取記憶體中的 PDF
+                            doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+                            
+                            # 判斷頁數是否小於 100 頁
+                            if len(doc) <= 100:
+                                # 開啟討論串 (避免檔名太長，最多取前 50 字)
+                                thread_name = filename if len(filename) <= 50 else filename[:47] + "..."
+                                thread = await message.create_thread(
+                                    name=f"📄 {thread_name} 預覽",
+                                    auto_archive_duration=60  # 60分鐘沒人講話自動隱藏
+                                )
+                                
+                                await thread.send(f"總共 {len(doc)} 頁，開始轉換為圖片...")
+                                
+                                # 逐頁轉換並傳送
+                                for page_num in range(len(doc)):
+                                    page = doc.load_page(page_num)
+                                    # dpi=150 能保持文字清晰，又不會讓圖檔太大傳送過慢
+                                    pix = page.get_pixmap(dpi=150)
+                                    img_bytes = pix.tobytes("png")
+                                    
+                                    # 將圖片 bytes 轉成 Discord 可以傳送的 File 物件
+                                    file = discord.File(fp=io.BytesIO(img_bytes), filename=f"page_{page_num + 1}.png")
+                                    await thread.send(content=f"第 {page_num + 1} 頁", file=file)
+                                
+                                await message.add_reaction('✅')
+                            else:
+                                print(f"[{filename}] 頁數超過 100 頁 ({len(doc)} 頁)，不進行轉換。")
+                                await message.reply(f"這份 PDF 有 {len(doc)} 頁，超過 100 頁的限制，太多啦！！")
+                                
+                            doc.close()
+                    except Exception as e:
+                        print(f"處理 PDF 發生錯誤: {e}")
+                        await message.add_reaction('❌')
+        # --------------------------------------------------------
 
         msc = message.channel
 
