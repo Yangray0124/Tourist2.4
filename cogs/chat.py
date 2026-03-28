@@ -578,8 +578,8 @@ class Chat(commands.Cog):
                             # 使用 PyMuPDF 讀取記憶體中的 PDF
                             doc = fitz.open(stream=pdf_bytes, filetype="pdf")
                             
-                            # 判斷頁數是否小於 100 頁
-                            if len(doc) <= 100:
+                            # 判斷頁數是否小於 1000 頁
+                            if len(doc) <= 1000:
                                 # 開啟討論串 (避免檔名太長，最多取前 50 字)
                                 thread_name = filename if len(filename) <= 50 else filename[:47] + "..."
                                 thread = await message.create_thread(
@@ -602,8 +602,8 @@ class Chat(commands.Cog):
                                 
                                 await message.add_reaction('✅')
                             else:
-                                print(f"[{filename}] 頁數超過 100 頁 ({len(doc)} 頁)，不進行轉換。")
-                                await message.reply(f"這份 PDF 有 {len(doc)} 頁，超過 100 頁的限制，太多啦！！")
+                                print(f"[{filename}] 頁數超過 1000 頁 ({len(doc)} 頁)，不進行轉換。")
+                                await message.reply(f"這份 PDF 有 {len(doc)} 頁，超過 1000 頁的限制，太多啦！！")
                                 
                             doc.close()
                     except Exception as e:
