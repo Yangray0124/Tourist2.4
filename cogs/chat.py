@@ -553,7 +553,7 @@ class Chat(commands.Cog):
         if "檔案上傳完成" in message.content and "點我直接下載" in message.content:
             # 使用正則表達式抓取檔名與網址
             # 假設訊息格式為：檔名: `B13901080_myconv.m` 或 [點我直接下載](https://storage.to/r/...)
-            filename_match = re.search(r'檔名:\s*`?([^`\s]+)`?', message.content)
+            filename_match = re.search(r'檔名:\s*`([^`]+)`', message.content)
             url_match = re.search(r'\[點我直接下載\]\((https?://[^\s\)]+)\)', message.content)
             
             # 如果對方機器人不是用 Markdown 隱藏網址，而是直接貼網址，可以用這行備用：
