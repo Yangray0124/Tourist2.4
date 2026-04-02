@@ -3,6 +3,7 @@ import os
 import re
 import io
 import fitz  # PyMuPDF 的套件名稱是 fitz
+import asyncio
 
 import discord
 import time
@@ -551,12 +552,9 @@ class Chat(commands.Cog):
         # ------------------- PDF 擷取與預覽功能 -------------------
         # 判斷訊息中是否包含特定關鍵字
         if "檔案上傳完成" in message.content and "點我直接下載" in message.content:
-            # 使用正則表達式抓取檔名與網址
-            # 假設訊息格式為：檔名: `B13901080_myconv.m` 或 [點我直接下載](https://storage.to/r/...)
             filename_match = re.search(r'檔名:\s*`([^`]+)`', message.content)
             url_match = re.search(r'\[點我直接下載\]\((https?://[^\s\)]+)\)', message.content)
             
-            # 如果對方機器人不是用 Markdown 隱藏網址，而是直接貼網址，可以用這行備用：
             if not url_match:
                 url_match = re.search(r'(https?://storage\.to/[^\s\)]+)', message.content)
 
@@ -564,41 +562,43 @@ class Chat(commands.Cog):
                 filename = filename_match.group(1)
                 url = url_match.group(1)
 
-                # 確認附檔名是否為 .pdf (不分大小寫)
                 if filename.lower().endswith('.pdf'):
                     try:
-                        # 告訴使用者正在處理中，可以加個表情符號
                         await message.add_reaction('⏳')
 
-                        # 下載 PDF 到記憶體中 (不存入實體硬碟，節省空間)
-                        req = requests.get(url, timeout=15)
+                        # 使用 to_thread 避免下載時卡死整個機器人
+                        req = await asyncio.to_thread(requests.get, url, timeout=20)
                         if req.status_code == 200:
                             pdf_bytes = req.content
-                            
-                            # 使用 PyMuPDF 讀取記憶體中的 PDF
                             doc = fitz.open(stream=pdf_bytes, filetype="pdf")
                             
-                            # 判斷頁數是否小於 1000 頁
                             if len(doc) <= 1000:
-                                # 開啟討論串 (避免檔名太長，最多取前 50 字)
                                 thread_name = filename if len(filename) <= 50 else filename[:47] + "..."
                                 thread = await message.create_thread(
                                     name=f"📄 {thread_name} 預覽",
-                                    auto_archive_duration=60  # 60分鐘沒人講話自動隱藏
+                                    auto_archive_duration=60
                                 )
                                 
                                 await thread.send(f"總共 {len(doc)} 頁，開始轉換為圖片...")
                                 
-                                # 逐頁轉換並傳送
+                                # ---------- 新增：小於 10MB 就先傳送 PDF 原檔 ----------
+                                if len(pdf_bytes) < 10 * 1024 * 1024:
+                                    pdf_file = discord.File(fp=io.BytesIO(pdf_bytes), filename=filename)
+                                    await thread.send(content="📥 **提供原檔案下載：**", file=pdf_file)
+                                # --------------------------------------------------------
+
+                                # 逐頁轉換並傳送 (保留背景處理，防止卡死)
                                 for page_num in range(len(doc)):
                                     page = doc.load_page(page_num)
-                                    # dpi=150 能保持文字清晰，又不會讓圖檔太大傳送過慢
                                     pix = page.get_pixmap(dpi=150)
                                     img_bytes = pix.tobytes("png")
                                     
-                                    # 將圖片 bytes 轉成 Discord 可以傳送的 File 物件
                                     file = discord.File(fp=io.BytesIO(img_bytes), filename=f"page_{page_num + 1}.png")
                                     await thread.send(content=f"第 {page_num + 1} 頁", file=file)
+                                    
+                                    # 防刷頻冷卻：一頁一頁傳很容易撞到 Discord 限制 (5則/5秒)
+                                    # 停頓 1 秒可以避免機器人被 API 暫時封鎖，也能讓出 CPU 給其他指令處理
+                                    await asyncio.sleep(1)
                                 
                                 await message.add_reaction('✅')
                             else:
