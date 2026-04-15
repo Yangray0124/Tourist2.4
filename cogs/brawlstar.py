@@ -111,6 +111,11 @@ class BrawlStar(commands.Cog):
         clean_tag = tag.replace("#", "").upper()
         try:
             req = requests.get(f"https://api.brawlstars.com/v1/players/%23{clean_tag}", headers=BS_HEADERS, timeout=5)
+            
+            # --- Print API 回傳內容 (玩家資訊) ---
+            print(f"DEBUG [Player Info]: {clean_tag}")
+            print(json.dumps(req.json(), indent=4, ensure_ascii=False))
+            
             if req.status_code != 200:
                 await interaction.followup.send("❌ 標籤錯誤或 API 連線失敗。")
                 return
@@ -121,6 +126,11 @@ class BrawlStar(commands.Cog):
             save_to_history(clean_tag, p_name)
 
             b_req = requests.get(f"https://api.brawlstars.com/v1/players/%23{clean_tag}/battlelog", headers=BS_HEADERS, timeout=5)
+            
+            # --- Print API 回傳內容 (對戰紀錄) ---
+            print(f"DEBUG [Initial Battlelog]: {clean_tag}")
+            print(json.dumps(b_req.json(), indent=4, ensure_ascii=False))
+
             if b_req.status_code == 200:
                 items = b_req.json().get("items", [])
                 if items: last_battle_time[clean_tag] = items[0].get("battleTime")
@@ -149,6 +159,11 @@ class BrawlStar(commands.Cog):
 
             try:
                 req = requests.get(f"https://api.brawlstars.com/v1/players/%23{tag}/battlelog", headers=BS_HEADERS, timeout=10)
+                
+                # --- Print 每次定時檢查的回傳內容 ---
+                print(f"DEBUG [Periodic Update]: {name} (#{tag})")
+                print(json.dumps(req.json(), indent=4, ensure_ascii=False))
+
                 if req.status_code != 200: continue
                 res = req.json()
                 items = res.get("items", [])
