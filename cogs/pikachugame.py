@@ -338,7 +338,7 @@ class Pikachugame(commands.Cog):
         id = interaction.user.id
 
         if not os.path.exists(f"img/user_avatar/{name}.png"):
-            url = interaction.user.avatar.url
+            url = interaction.user.display_avatar.replace(format="png", size=128).url
             head = requests.get(url)
             nparr = np.frombuffer(head.content, np.uint8)
             img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
