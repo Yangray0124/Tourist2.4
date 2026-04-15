@@ -8,3 +8,18 @@ bin/
 cogs/__pycache__/
 img/user_avatar/
 downloads/
+
+doc/
+myenv/
+nodejs/
+presets/
+bot_debug.log
+node-v20.11.0-linux-arm64.tar.xz
+pikachu.jpg
+www.youtube.com_cookies.txt
+
+# Ignore SQLite databases
+*.db
+*.sqlite3
+pika_playing.json
+pika_playing.txt
