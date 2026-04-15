@@ -90,7 +90,6 @@ class HistorySelect(discord.ui.Select):
 
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.defer()
-        # 預設關注 1 小時 (3600秒)
         await self.cog.start_focus(interaction, self.values[0], 3600)
 
 class HistoryView(discord.ui.View):
@@ -112,24 +111,19 @@ class BrawlStar(commands.Cog):
         try:
             req = requests.get(f"https://api.brawlstars.com/v1/players/%23{clean_tag}", headers=BS_HEADERS, timeout=5)
             
-            # --- Print API 回傳內容 (玩家資訊) ---
-            print(f"DEBUG [Player Info]: {clean_tag}")
-            print(json.dumps(req.json(), indent=4, ensure_ascii=False))
-            
             if req.status_code != 200:
+                print(f"DEBUG [Setup Failed]: {clean_tag} Status {req.status_code}")
                 await interaction.followup.send("❌ 標籤錯誤或 API 連線失敗。")
                 return
+                
             p_data = req.json()
             p_name = p_data.get("name", "Unknown")
-            
-            # 紀錄到常用清單
             save_to_history(clean_tag, p_name)
 
             b_req = requests.get(f"https://api.brawlstars.com/v1/players/%23{clean_tag}/battlelog", headers=BS_HEADERS, timeout=5)
             
-            # --- Print API 回傳內容 (對戰紀錄) ---
-            print(f"DEBUG [Initial Battlelog]: {clean_tag}")
-            print(json.dumps(b_req.json(), indent=4, ensure_ascii=False))
+            # 初始設定時依然印出一次，確認連線成功
+            print(f"DEBUG [Initial Focus]: {p_name} (#{clean_tag})")
 
             if b_req.status_code == 200:
                 items = b_req.json().get("items", [])
@@ -143,7 +137,8 @@ class BrawlStar(commands.Cog):
             
             bs_focus_list.append({"tag": clean_tag, "name": p_name, "remain": sec, "channel": interaction.channel})
             await interaction.followup.send(f"✅ 成功追蹤 **{p_name}** (#{clean_tag})！")
-        except: 
+        except Exception as e: 
+            print(f"DEBUG [Setup Error]: {e}")
             await interaction.followup.send("❌ 連線發生錯誤。")
 
     @tasks.loop(seconds=bs_focus_CD)
@@ -159,12 +154,8 @@ class BrawlStar(commands.Cog):
 
             try:
                 req = requests.get(f"https://api.brawlstars.com/v1/players/%23{tag}/battlelog", headers=BS_HEADERS, timeout=10)
-                
-                # --- Print 每次定時檢查的回傳內容 ---
-                print(f"DEBUG [Periodic Update]: {name} (#{tag})")
-                print(json.dumps(req.json(), indent=4, ensure_ascii=False))
-
                 if req.status_code != 200: continue
+                
                 res = req.json()
                 items = res.get("items", [])
                 if not items: continue
@@ -176,6 +167,11 @@ class BrawlStar(commands.Cog):
                         new_battles.append(b)
                     else: break
                 
+                # --- 只有當有「新對戰」時才印出內容 ---
+                if new_battles:
+                    print(f"DEBUG [New Battle Found]: {name} (#{tag})")
+                    print(json.dumps(res, indent=4, ensure_ascii=False))
+
                 if items: last_battle_time[tag] = items[0].get("battleTime")
                 new_battles.reverse()
 
