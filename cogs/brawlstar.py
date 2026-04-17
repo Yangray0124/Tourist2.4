@@ -129,10 +129,11 @@ class BrawlStar(commands.Cog):
                 items = b_req.json().get("items", [])
                 if items: last_battle_time[clean_tag] = items[0].get("battleTime")
 
+            # 🛑 跨頻道檢查：同時比對標籤與頻道 ID
             for p in bs_focus_list:
-                if p["tag"] == clean_tag:
-                    p["remain"], p["name"], p["channel"] = sec, p_name, interaction.channel
-                    await interaction.followup.send(f"✅ 已更新追蹤：**{p_name}** (#{clean_tag})。")
+                if p["tag"] == clean_tag and p["channel"].id == interaction.channel.id:
+                    p["remain"], p["name"] = sec, p_name
+                    await interaction.followup.send(f"✅ 已更新本頻道的追蹤：**{p_name}** (#{clean_tag})。")
                     return
             
             bs_focus_list.append({"tag": clean_tag, "name": p_name, "remain": sec, "channel": interaction.channel})
@@ -148,7 +149,10 @@ class BrawlStar(commands.Cog):
             tag, name, channel = p["tag"], p["name"], p["channel"]
             p["remain"] -= bs_focus_CD
             if p["remain"] <= 0:
-                await channel.send(f"⌛ **{name}** (#{tag}) 的追蹤時間結束！")
+                try:
+                    await channel.send(f"⌛ **{name}** (#{tag}) 的追蹤時間結束！")
+                except:
+                    pass # 若無法發送訊息，直接略過以防報錯
                 del_tmp.append(p)
                 continue
 
@@ -169,7 +173,7 @@ class BrawlStar(commands.Cog):
                 
                 # --- 只有當有「新對戰」時才印出內容 ---
                 if new_battles:
-                    print(f"DEBUG [New Battle Found]: {name} (#{tag})")
+                    print(f"DEBUG [New Battle Found]: {name} (#{tag}) for Channel: {channel.name if hasattr(channel, 'name') else channel.id}")
                     print(json.dumps(res, indent=4, ensure_ascii=False))
 
                 if items: last_battle_time[tag] = items[0].get("battleTime")
@@ -205,11 +209,22 @@ class BrawlStar(commands.Cog):
                         else: res_str = "獲得了 🤝 **平手**"
 
                     msg = f"🎮 **{name}** 使用了 🔫 **{used_brawler}** 在 ⚔️ **{mode}** 的 🗺️ **{map_name}** {res_str} ({t_str} 🏆)"
-                    await channel.send(msg, view=BattleDetailView(b, tag))
+                    
+                    # 🛑 權限攔截保護：發生 403 錯誤時移除該頻道的追蹤任務
+                    try:
+                        await channel.send(msg, view=BattleDetailView(b, tag))
+                    except discord.Forbidden:
+                        print(f"❌ 權限不足 (403): 無法在頻道 {channel.id} 發送。已自動取消該頻道的追蹤。")
+                        if p not in del_tmp:
+                            del_tmp.append(p)
+                        break
+                    except Exception as send_err:
+                        print(f"發送訊息失敗: {send_err}")
 
             except Exception as e: 
                 print(f"BS Loop Error: {e}")
 
+        # 清除過期或無權限的追蹤
         for p in del_tmp:
             if p in bs_focus_list: bs_focus_list.remove(p)
 
