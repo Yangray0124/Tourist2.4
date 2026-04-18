@@ -172,9 +172,10 @@ class BrawlStar(commands.Cog):
                     else: break
                 
                 # --- 只有當有「新對戰」時才印出內容 ---
+                # --- 只有當有「新對戰」時才印出內容 ---
                 if new_battles:
-                    print(f"DEBUG [New Battle Found]: {name} (#{tag}) for Channel: {channel.name if hasattr(channel, 'name') else channel.id}")
-                    print(json.dumps(res, indent=4, ensure_ascii=False))
+                    print(f"DEBUG [New Battle Found]: {name} (#{tag}) for Channel: {channel.name if hasattr(channel, 'name') else channel.id}", flush=True)
+                    print(json.dumps(new_battles, indent=4, ensure_ascii=False), flush=True)
 
                 if items: last_battle_time[tag] = items[0].get("battleTime")
                 new_battles.reverse()
