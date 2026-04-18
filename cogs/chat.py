@@ -151,10 +151,10 @@ class Chat(commands.Cog):
     async def hello(self, interaction: discord.Interaction):
         await interaction.response.send_message("你好")
 
-    @app_commands.command(name="版本", description="Tourist2.3")
+    @app_commands.command(name="版本", description="Tourist2.4")
     async def version(self, interaction: discord.Interaction):
         await interaction.response.send_message(">>> 版本： **Tourist2.4**\n"
-                                                "更新日期： 2025/12/29\n"
+                                                "更新日期： 2026/04/19\n"
                                                 "才藝： 智能聊天、cf功能、唱歌\n"
                                                 "贊助商： 郭老師贊助機器！\n"
                                                 "OpenSource： https://github.com/Yangray0124/Tourist2.4.git")
