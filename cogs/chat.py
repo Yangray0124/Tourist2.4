@@ -587,18 +587,41 @@ class Chat(commands.Cog):
                                     await thread.send(content="📥 **提供原檔案下載：**", file=pdf_file)
                                 # --------------------------------------------------------
 
-                                # 逐頁轉換並傳送 (保留背景處理，防止卡死)
+                                # 批次轉換並傳送，讓使用者可以左右滑動 (最多10張/限制10MB)
+                                batch_files = []
+                                batch_size = 0
+                                batch_start_page = 1
+                                
                                 for page_num in range(len(doc)):
                                     page = doc.load_page(page_num)
                                     pix = page.get_pixmap(dpi=150)
                                     img_bytes = pix.tobytes("png")
+                                    img_size = len(img_bytes)
                                     
+                                    # 檢查：如果加入這張圖片會超過 10 個檔案，或是總大小超過 9.5MB (留點緩衝給 10MB 限制)
+                                    if len(batch_files) == 10 or (batch_size + img_size) > 9.5 * 1024 * 1024:
+                                        if batch_files:
+                                            # 結算並傳送當前批次
+                                            end_page = page_num
+                                            content_msg = f"第 {batch_start_page} - {end_page} 頁" if batch_start_page != end_page else f"第 {batch_start_page} 頁"
+                                            await thread.send(content=content_msg, files=batch_files)
+                                            await asyncio.sleep(1) # 防刷頻冷卻
+                                            
+                                        # 清空並重置批次，準備裝下一批
+                                        batch_files = []
+                                        batch_size = 0
+                                        batch_start_page = page_num + 1
+                                    
+                                    # 將當前頁面加入批次
                                     file = discord.File(fp=io.BytesIO(img_bytes), filename=f"page_{page_num + 1}.png")
-                                    await thread.send(content=f"第 {page_num + 1} 頁", file=file)
-                                    
-                                    # 防刷頻冷卻：一頁一頁傳很容易撞到 Discord 限制 (5則/5秒)
-                                    # 停頓 1 秒可以避免機器人被 API 暫時封鎖，也能讓出 CPU 給其他指令處理
-                                    await asyncio.sleep(1)
+                                    batch_files.append(file)
+                                    batch_size += img_size
+                                
+                                # 迴圈結束後，把最後剩下還沒傳送的批次傳出去
+                                if batch_files:
+                                    end_page = len(doc)
+                                    content_msg = f"第 {batch_start_page} - {end_page} 頁" if batch_start_page != end_page else f"第 {batch_start_page} 頁"
+                                    await thread.send(content=content_msg, files=batch_files)
                                 
                                 await message.add_reaction('✅')
                             else:
