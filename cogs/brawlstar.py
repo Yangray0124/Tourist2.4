@@ -172,7 +172,6 @@ class BrawlStar(commands.Cog):
                     else: break
                 
                 # --- 只有當有「新對戰」時才印出內容 ---
-                # --- 只有當有「新對戰」時才印出內容 ---
                 if new_battles:
                     print(f"DEBUG [New Battle Found]: {name} (#{tag}) for Channel: {channel.name if hasattr(channel, 'name') else channel.id}", flush=True)
                     print(json.dumps(new_battles, indent=4, ensure_ascii=False), flush=True)
@@ -187,7 +186,9 @@ class BrawlStar(commands.Cog):
                     map_name = event_info.get("map", "Unknown Map")
                     
                     used_brawler = "Unknown"
+                    brawler_trophies = 0 # 記錄當下角色盃數
                     participants = []
+                    
                     if "teams" in battle_info:
                         for t in battle_info["teams"]: participants.extend(t)
                     elif "players" in battle_info:
@@ -195,7 +196,9 @@ class BrawlStar(commands.Cog):
                     
                     for pl in participants:
                         if pl.get("tag", "").replace("#", "") == tag:
-                            used_brawler = format_name(pl.get("brawler", {}).get("name", ""))
+                            brawler_data = pl.get("brawler", {})
+                            used_brawler = format_name(brawler_data.get("name", ""))
+                            brawler_trophies = brawler_data.get("trophies", 0) # 取得該角色的盃數
                             break
 
                     t_change = battle_info.get("trophyChange", 0)
@@ -210,6 +213,17 @@ class BrawlStar(commands.Cog):
                         else: res_str = "獲得了 🤝 **平手**"
 
                     msg = f"🎮 **{name}** 使用了 🔫 **{used_brawler}** 在 ⚔️ **{mode}** 的 🗺️ **{map_name}** {res_str} ({t_str} 🏆)"
+                    
+                    # === 檢查盃數是否跨越 1000, 2000... 的門檻 ===
+                    if t_change > 0:
+                        before_trophies = brawler_trophies
+                        after_trophies = brawler_trophies + t_change
+                        
+                        # 檢查除以 1000 的商數是否增加
+                        if (before_trophies // 1000) < (after_trophies // 1000):
+                            milestone = (after_trophies // 1000) * 1000
+                            # 加入一些慶祝的 Emoji
+                            msg += f"\n🎉🎊 **{name}** 的 **{used_brawler}** 達到 **{milestone}** 杯了 🏆🔥"
                     
                     # 🛑 權限攔截保護：發生 403 錯誤時移除該頻道的追蹤任務
                     try:
