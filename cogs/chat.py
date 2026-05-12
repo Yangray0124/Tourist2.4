@@ -545,6 +545,8 @@ class Chat(commands.Cog):
         cf_queue.append({"function": self.cf_get_random_problem, "interaction": interaction, "params": {"L": l, "R": r}})
 
     @app_commands.command(name="猜拳", description="剪刀石頭布！")
+    @app_commands.allowed_installs(guilds=True, users=True) # 允許伺服器與用戶安裝
+    @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
     async def paper_scissors_stone(self, interaction: discord.Interaction):
         await interaction.response.defer()
 
