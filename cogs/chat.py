@@ -544,6 +544,13 @@ class Chat(commands.Cog):
         await interaction.response.defer()
         cf_queue.append({"function": self.cf_get_random_problem, "interaction": interaction, "params": {"L": l, "R": r}})
 
+    @app_commands.command(name="猜拳", description="剪刀石頭布！")
+    async def paper_scissors_stone(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+
+        m = random.choice(["剪刀 :v: ", "石頭 :fist: ", "布 :raised_hand_with_fingers_splayed: "])
+        await interaction.followup.send(f"{m}")
+
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         if message.author == self.bot.user:
