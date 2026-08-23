@@ -80,6 +80,120 @@ def load_problems_data():
             print(f"[AtCoder] 載入題目快取失敗: {e}")
 
 
+class AtCoderSubmissionView(discord.ui.View):
+    """AtCoder 提交通知的詳細資訊按鈕。"""
+
+    def __init__(self, player: str, submission: dict):
+        super().__init__(timeout=86400)  # 按鈕保留 24 小時
+        self.player = player
+        self.submission = submission
+
+    @discord.ui.button(
+        label="查看詳細資訊",
+        emoji="📊",
+        style=discord.ButtonStyle.primary
+    )
+    async def show_detail(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button
+    ):
+        sub = self.submission
+        verdict = sub.get("verdict", "")
+
+        # Embed 左側顏色依評測結果區分
+        if verdict == "AC":
+            color = discord.Color.green()
+        elif verdict in {"WA", "RE", "CE", "IE"}:
+            color = discord.Color.red()
+        elif verdict in {"TLE", "MLE", "OLE"}:
+            color = discord.Color.orange()
+        else:
+            color = discord.Color.blue()
+
+        embed = discord.Embed(
+            title=f"📊 Submission Detail: {sub['problem_title']}",
+            url=sub["submission_url"],
+            color=color
+        )
+
+        embed.add_field(
+            name="👤 Player",
+            value=f"[{self.player}](https://atcoder.jp/users/{self.player})",
+            inline=False
+        )
+        embed.add_field(
+            name="📌 Verdict",
+            value=format_verdict(verdict),
+            inline=True
+        )
+        embed.add_field(
+            name="💻 Language",
+            value=sub.get("language") or "Unknown",
+            inline=True
+        )
+        embed.add_field(
+            name="🎯 Score",
+            value=f"{sub['point_str']} pt",
+            inline=True
+        )
+
+        execution_time = sub.get("execution_time")
+        embed.add_field(
+            name="⏱ Execution Time",
+            value=f"{execution_time} ms" if execution_time is not None else "-",
+            inline=True
+        )
+
+        code_length = sub.get("code_length")
+        embed.add_field(
+            name="📦 Code Length",
+            value=f"{code_length} Bytes" if code_length is not None else "-",
+            inline=True
+        )
+
+        difficulty = sub.get("difficulty")
+        if difficulty is not None:
+            try:
+                difficulty_text = str(int(round(float(difficulty))))
+            except (TypeError, ValueError):
+                difficulty_text = str(difficulty)
+
+            embed.add_field(
+                name="⭐ Difficulty",
+                value=difficulty_text,
+                inline=True
+            )
+
+        epoch_second = sub.get("epoch_second")
+        if epoch_second:
+            embed.add_field(
+                name="🕒 Submitted",
+                value=f"<t:{int(epoch_second)}:R>",
+                inline=True
+            )
+
+        embed.add_field(
+            name="📝 Problem",
+            value=f"[{sub['problem_title']}]({sub['problem_url']})",
+            inline=False
+        )
+        embed.add_field(
+            name="🔗 Submission",
+            value=f"[前往 AtCoder 查看完整提交]({sub['submission_url']})",
+            inline=False
+        )
+
+        embed.set_footer(
+            text=f"AtCoder • {sub['contest_id'].upper()} • Submission #{sub['submission_id']}"
+        )
+
+        await interaction.response.send_message(
+            embed=embed,
+            ephemeral=True
+        )
+
+
 class AtCoder(commands.Cog):
     """AtCoder 相關指令與追蹤模組"""
 
@@ -267,8 +381,26 @@ class AtCoder(commands.Cog):
                 f"> 🔗 [點此查看提交詳情]({submission_url})"
             )
 
+            # 詳細卡片所需資訊；原本通知文字 msg 保持不變
+            model_info = problem_models_cache.get(prob_id, {})
+            detail_data = {
+                "submission_id": sub_id,
+                "contest_id": contest_id,
+                "problem_title": prob_title,
+                "verdict": verdict,
+                "language": sub.get("language", "Unknown"),
+                "point_str": point_str,
+                "execution_time": sub.get("execution_time"),
+                "code_length": sub.get("length"),
+                "difficulty": model_info.get("difficulty"),
+                "epoch_second": sub.get("epoch_second"),
+                "problem_url": problem_url,
+                "submission_url": submission_url
+            }
+            view = AtCoderSubmissionView(ID, detail_data)
+
             try:
-                await channel.send(msg)
+                await channel.send(msg, view=view)
             except discord.Forbidden:
                 print(f"[AtCoder] 權限不足: 無法在頻道 {channel.id} 發送訊息")
                 break
