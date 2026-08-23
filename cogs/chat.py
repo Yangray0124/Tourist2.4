@@ -134,6 +134,7 @@ def encode_image(image_path):
 cf_queue = []  # {function, interaction, params{} }
 cf_focus_list = []  # {ID, remain, channel }
 last_submission_id = {}
+cf_contest_name_cache = {}
 
 
 class CFSubmissionView(discord.ui.View):
@@ -148,6 +149,8 @@ class CFSubmissionView(discord.ui.View):
         style=discord.ButtonStyle.primary
     )
     async def show_details(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
+
         sub = self.submission
         raw_verdict = sub["problem_verdict"]
 
@@ -178,17 +181,50 @@ class CFSubmissionView(discord.ui.View):
         problem_idx = sub["problem_idx"]
         submission_id = sub["problem_id"]
 
+        contest_name = None
+        contest_url = None
+
         if contest_id is not None:
             problem_url = f"https://codeforces.com/contest/{contest_id}/problem/{problem_idx}"
             submission_url = f"https://codeforces.com/contest/{contest_id}/submission/{submission_id}"
+            contest_url = f"https://codeforces.com/contest/{contest_id}"
             links = f"[查看題目]({problem_url})　•　[查看提交]({submission_url})"
+
+            contest_name = cf_contest_name_cache.get(contest_id)
+            if contest_name is None:
+                try:
+                    contest_req = await asyncio.to_thread(
+                        requests.get,
+                        f"https://codeforces.com/api/contest.standings?contestId={contest_id}&from=1&count=1&showUnofficial=true",
+                        timeout=5
+                    )
+                    if contest_req.status_code == 200:
+                        contest_data = contest_req.json()
+                        if contest_data.get("status") == "OK":
+                            contest_name = contest_data.get("result", {}).get("contest", {}).get("name")
+                except Exception as e:
+                    print(f"取得 Codeforces 比賽名稱失敗 ({contest_id}): {e}")
+
+                if contest_name:
+                    cf_contest_name_cache[contest_id] = contest_name
+
+            if not contest_name:
+                contest_name = f"Contest {contest_id}"
         else:
             submission_url = f"https://codeforces.com/submissions/{self.player}"
             links = f"[查看玩家提交紀錄]({submission_url})"
 
+        if contest_name and contest_url:
+            description = (
+                f"🏆 **[{contest_name}]({contest_url})**\n"
+                f"**{problem_idx} - {sub['problem_name']}**"
+            )
+        else:
+            description = f"**{problem_idx} - {sub['problem_name']}**"
+
         embed = discord.Embed(
             title="📊 Codeforces 提交詳細資訊",
-            description=f"**{problem_idx} - {sub['problem_name']}**",
+            description=description,
             color=color
         )
         embed.add_field(name="👤 玩家", value=self.player, inline=True)
@@ -217,7 +253,7 @@ class CFSubmissionView(discord.ui.View):
         embed.add_field(name="🔗 連結", value=links, inline=False)
         embed.set_footer(text=f"Codeforces • Submission #{submission_id}")
 
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
 
 class Chat(commands.Cog):
@@ -609,6 +645,7 @@ class Chat(commands.Cog):
             Choice(name="1hr", value=3600),
             Choice(name="2hr", value=3600*2),
             Choice(name="3hr", value=3600*3),
+            Choice(name="1天", value=3600*24),
         ]
     )
     async def cf_focus(self, interaction: discord.Interaction, id: str, 時間: Choice[int]):

@@ -20,6 +20,7 @@ ac_focus_CD = 20  # 每 20 秒檢查一次
 problems_cache: List[Dict[str, Any]] = []
 problem_models_cache: Dict[str, Dict[str, Any]] = {}
 cache_last_updated = 0
+contest_name_cache: Dict[str, str] = {}
 
 
 def get_rating_color_emoji(rating: int) -> str:
@@ -80,6 +81,32 @@ def load_problems_data():
             print(f"[AtCoder] 載入題目快取失敗: {e}")
 
 
+def get_contest_name(contest_id: str) -> str:
+    """取得 AtCoder 比賽完整名稱，並快取避免重複請求。"""
+    if not contest_id:
+        return "Unknown Contest"
+
+    if contest_id in contest_name_cache:
+        return contest_name_cache[contest_id]
+
+    contest_name = contest_id.upper()
+    try:
+        res = requests.get(f"https://atcoder.jp/contests/{contest_id}", timeout=5)
+        if res.status_code == 200:
+            soup = BeautifulSoup(res.text, "html.parser")
+            if soup.title and soup.title.string:
+                title = soup.title.string.strip()
+                if title.endswith(" - AtCoder"):
+                    title = title[:-10].strip()
+                if title:
+                    contest_name = title
+    except Exception as e:
+        print(f"[AtCoder] 取得比賽名稱失敗 ({contest_id}): {e}")
+
+    contest_name_cache[contest_id] = contest_name
+    return contest_name
+
+
 class AtCoderSubmissionView(discord.ui.View):
     """AtCoder 提交通知的詳細資訊按鈕。"""
 
@@ -120,6 +147,11 @@ class AtCoderSubmissionView(discord.ui.View):
         embed.add_field(
             name="👤 Player",
             value=f"[{self.player}](https://atcoder.jp/users/{self.player})",
+            inline=False
+        )
+        embed.add_field(
+            name="🏆 Contest",
+            value=f"[{sub.get('contest_name', sub['contest_id'].upper())}](https://atcoder.jp/contests/{sub['contest_id']})",
             inline=False
         )
         embed.add_field(
@@ -376,9 +408,8 @@ class AtCoder(commands.Cog):
             submission_url = f"https://atcoder.jp/contests/{contest_id}/submissions/{sub_id}"
 
             msg = (
-                f"📢 **{ID}** 提交了 [**{prob_title}**]({problem_url}) [{contest_id.upper()}]，"
-                f"結果是 ***{verdict_text}***（{point_str} pt）！\n"
-                f"> 🔗 [點此查看提交詳情]({submission_url})"
+                f"📢 **{ID}** 提交了 **{prob_title}** [{contest_id.upper()}]，"
+                f"結果是 ***{verdict_text}***（{point_str} pt）！"
             )
 
             # 詳細卡片所需資訊；原本通知文字 msg 保持不變
@@ -386,6 +417,7 @@ class AtCoder(commands.Cog):
             detail_data = {
                 "submission_id": sub_id,
                 "contest_id": contest_id,
+                "contest_name": get_contest_name(contest_id),
                 "problem_title": prob_title,
                 "verdict": verdict,
                 "language": sub.get("language", "Unknown"),
@@ -689,6 +721,7 @@ class AtCoder(commands.Cog):
             Choice(name="1hr", value=3600),
             Choice(name="2hr", value=3600 * 2),
             Choice(name="3hr", value=3600 * 3),
+            Choice(name="1天", value=3600 * 24),
         ]
     )
     async def ac_focus_cmd(self, interaction: discord.Interaction, id: str, 時間: Choice[int]):
