@@ -135,6 +135,83 @@ cf_queue = []  # {function, interaction, params{} }
 cf_focus_list = []  # {ID, remain, channel }
 last_submission_id = {}
 cf_contest_name_cache = {}
+cf_contest_cache_last_updated = 0
+cf_contest_cache_lock = asyncio.Lock()
+
+
+async def get_cf_contest_name(contest_id):
+    global cf_contest_cache_last_updated
+
+    if contest_id is None:
+        return None
+
+    if contest_id in cf_contest_name_cache:
+        return cf_contest_name_cache[contest_id]
+
+    async with cf_contest_cache_lock:
+        if contest_id in cf_contest_name_cache:
+            return cf_contest_name_cache[contest_id]
+
+        now = time.time()
+
+        # 優先一次抓完整的 Codeforces contest list 並快取，
+        # 避免每次按「查看詳細資訊」都呼叫 contest.standings。
+        if not cf_contest_name_cache or now - cf_contest_cache_last_updated > 21600:
+            try:
+                contest_req = await asyncio.to_thread(
+                    requests.get,
+                    "https://codeforces.com/api/contest.list?gym=false",
+                    timeout=8
+                )
+
+                if contest_req.status_code == 200:
+                    contest_data = contest_req.json()
+                    if contest_data.get("status") == "OK":
+                        for contest in contest_data.get("result", []):
+                            cid = contest.get("id")
+                            name = contest.get("name")
+                            if cid is not None and name:
+                                cf_contest_name_cache[cid] = name
+                        cf_contest_cache_last_updated = now
+                    else:
+                        print(f"取得 Codeforces 比賽列表失敗: {contest_data.get('comment', 'Unknown Error')}")
+            except Exception as e:
+                print(f"取得 Codeforces 比賽列表失敗: {e}")
+
+        if contest_id in cf_contest_name_cache:
+            return cf_contest_name_cache[contest_id]
+
+        # API 暫時失敗（例如 rate limit）時，再直接從 contest 頁面抓名稱當 fallback。
+        try:
+            page_req = await asyncio.to_thread(
+                requests.get,
+                f"https://codeforces.com/contest/{contest_id}",
+                timeout=8,
+                headers={"User-Agent": "Mozilla/5.0"}
+            )
+
+            if page_req.status_code == 200:
+                soup = BeautifulSoup(page_req.text, "html.parser")
+
+                caption = soup.select_one(".contest-name")
+                if caption:
+                    contest_name = caption.get_text(" ", strip=True)
+                else:
+                    title = soup.title.get_text(" ", strip=True) if soup.title else ""
+                    contest_name = title
+                    if contest_name.startswith("Dashboard - "):
+                        contest_name = contest_name[len("Dashboard - "):]
+                    if contest_name.endswith(" - Codeforces"):
+                        contest_name = contest_name[:-len(" - Codeforces")]
+                    contest_name = contest_name.strip()
+
+                if contest_name and contest_name != f"Contest {contest_id}":
+                    cf_contest_name_cache[contest_id] = contest_name
+                    return contest_name
+        except Exception as e:
+            print(f"從 Codeforces 頁面取得比賽名稱失敗 ({contest_id}): {e}")
+
+    return None
 
 
 class CFSubmissionView(discord.ui.View):
@@ -190,23 +267,7 @@ class CFSubmissionView(discord.ui.View):
             contest_url = f"https://codeforces.com/contest/{contest_id}"
             links = f"[查看題目]({problem_url})　•　[查看提交]({submission_url})"
 
-            contest_name = cf_contest_name_cache.get(contest_id)
-            if contest_name is None:
-                try:
-                    contest_req = await asyncio.to_thread(
-                        requests.get,
-                        f"https://codeforces.com/api/contest.standings?contestId={contest_id}&from=1&count=1&showUnofficial=true",
-                        timeout=5
-                    )
-                    if contest_req.status_code == 200:
-                        contest_data = contest_req.json()
-                        if contest_data.get("status") == "OK":
-                            contest_name = contest_data.get("result", {}).get("contest", {}).get("name")
-                except Exception as e:
-                    print(f"取得 Codeforces 比賽名稱失敗 ({contest_id}): {e}")
-
-                if contest_name:
-                    cf_contest_name_cache[contest_id] = contest_name
+            contest_name = await get_cf_contest_name(contest_id)
 
             if not contest_name:
                 contest_name = f"Contest {contest_id}"
