@@ -166,7 +166,6 @@ class AtCoderSubmissionView(discord.ui.View):
                 f"🏆 **[{contest_name}]({contest_url})**\n"
                 f"**{sub['problem_title']}**"
             ),
-            url=sub["submission_url"],
             color=color
         )
 
