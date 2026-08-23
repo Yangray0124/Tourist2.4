@@ -136,6 +136,90 @@ cf_focus_list = []  # {ID, remain, channel }
 last_submission_id = {}
 
 
+class CFSubmissionView(discord.ui.View):
+    def __init__(self, player: str, submission: dict):
+        super().__init__(timeout=86400)
+        self.player = player
+        self.submission = submission
+
+    @discord.ui.button(
+        label="查看詳細資訊",
+        emoji="📊",
+        style=discord.ButtonStyle.primary
+    )
+    async def show_details(self, interaction: discord.Interaction, button: discord.ui.Button):
+        sub = self.submission
+        raw_verdict = sub["problem_verdict"]
+
+        verdict_names = {
+            "OK": "Accepted",
+            "WRONG_ANSWER": "Wrong Answer",
+            "TIME_LIMIT_EXCEEDED": "Time Limit Exceeded",
+            "MEMORY_LIMIT_EXCEEDED": "Memory Limit Exceeded",
+            "RUNTIME_ERROR": "Runtime Error",
+            "COMPILATION_ERROR": "Compilation Error",
+            "IDLENESS_LIMIT_EXCEEDED": "Idleness Limit Exceeded",
+            "SKIPPED": "Skipped",
+            "FAILED": "Failed",
+            "PARTIAL": "Partial"
+        }
+        verdict = verdict_names.get(raw_verdict, raw_verdict.replace("_", " ").title())
+
+        if raw_verdict == "OK":
+            color = discord.Color.green()
+        elif raw_verdict in {"WRONG_ANSWER", "RUNTIME_ERROR", "COMPILATION_ERROR", "FAILED"}:
+            color = discord.Color.red()
+        elif raw_verdict in {"TIME_LIMIT_EXCEEDED", "MEMORY_LIMIT_EXCEEDED", "IDLENESS_LIMIT_EXCEEDED"}:
+            color = discord.Color.orange()
+        else:
+            color = discord.Color.blue()
+
+        contest_id = sub.get("contest_id")
+        problem_idx = sub["problem_idx"]
+        submission_id = sub["problem_id"]
+
+        if contest_id is not None:
+            problem_url = f"https://codeforces.com/contest/{contest_id}/problem/{problem_idx}"
+            submission_url = f"https://codeforces.com/contest/{contest_id}/submission/{submission_id}"
+            links = f"[查看題目]({problem_url})　•　[查看提交]({submission_url})"
+        else:
+            submission_url = f"https://codeforces.com/submissions/{self.player}"
+            links = f"[查看玩家提交紀錄]({submission_url})"
+
+        embed = discord.Embed(
+            title="📊 Codeforces 提交詳細資訊",
+            description=f"**{problem_idx} - {sub['problem_name']}**",
+            color=color
+        )
+        embed.add_field(name="👤 玩家", value=self.player, inline=True)
+        embed.add_field(name="📌 結果", value=verdict, inline=True)
+        embed.add_field(name="💻 語言", value=sub.get("language", "Unknown"), inline=True)
+        embed.add_field(name="⏱️ 執行時間", value=f"{sub.get('time_used', 0)} ms", inline=True)
+
+        memory_bytes = sub.get("memory", 0)
+        if memory_bytes >= 1024 * 1024:
+            memory_text = f"{memory_bytes / (1024 * 1024):.2f} MB"
+        else:
+            memory_text = f"{memory_bytes / 1024:.0f} KB"
+        embed.add_field(name="🧠 記憶體", value=memory_text, inline=True)
+
+        rating = sub.get("rating")
+        embed.add_field(name="⭐ 題目難度", value=str(rating) if rating is not None else "Unrated", inline=True)
+
+        passed_tests = sub.get("passed_tests")
+        if passed_tests is not None:
+            embed.add_field(name="🧪 通過測試", value=str(passed_tests), inline=True)
+
+        creation_time = sub.get("creation_time")
+        if creation_time is not None:
+            embed.add_field(name="🕒 提交時間", value=f"<t:{creation_time}:R>", inline=True)
+
+        embed.add_field(name="🔗 連結", value=links, inline=False)
+        embed.set_footer(text=f"Codeforces • Submission #{submission_id}")
+
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
 class Chat(commands.Cog):
 
     def __init__(self, bot: commands.Bot):
@@ -400,10 +484,18 @@ class Chat(commands.Cog):
         for i in range(count):
             if info["result"][i]["id"] == last_submission_id.get(ID):
                 break
-            l.append({"problem_id": info["result"][i]["id"],
-                      "problem_idx": info["result"][i]["problem"]["index"],
-                      "problem_name": info["result"][i]["problem"]["name"],
-                      "problem_verdict": info["result"][i]["verdict"]})
+            sub = info["result"][i]
+            l.append({"problem_id": sub["id"],
+                      "contest_id": sub.get("contestId"),
+                      "problem_idx": sub["problem"]["index"],
+                      "problem_name": sub["problem"]["name"],
+                      "problem_verdict": sub["verdict"],
+                      "rating": sub["problem"].get("rating"),
+                      "language": sub.get("programmingLanguage", "Unknown"),
+                      "time_used": sub.get("timeConsumedMillis", 0),
+                      "memory": sub.get("memoryConsumedBytes", 0),
+                      "passed_tests": sub.get("passedTestCount"),
+                      "creation_time": sub.get("creationTimeSeconds")})
                       
         for i in range(len(l)):
             if l[i]["problem_verdict"] != "TESTING":
@@ -416,7 +508,8 @@ class Chat(commands.Cog):
                 continue
             if verdict == "OK":
                 verdict = "Accepted"
-            await channel.send(f" **{ID}** 提交了 **{l[i]['problem_idx']} - {l[i]['problem_name']}** ，結果是 ***{verdict.title()}*** ！")
+            view = CFSubmissionView(ID, l[i])
+            await channel.send(f" **{ID}** 提交了 **{l[i]['problem_idx']} - {l[i]['problem_name']}** ，結果是 ***{verdict.title()}*** ！", view=view)
 
     async def cf_get_random_problem(self, interaction: discord.Interaction, params: dict):
         print("cf_get_random_problem")
