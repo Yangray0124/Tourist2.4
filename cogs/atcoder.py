@@ -311,7 +311,7 @@ class AtCoder(commands.Cog):
         })
 
         time_str = f"{sec//3600} 小時" if sec >= 3600 else f"{sec//60} 分鐘"
-        await interaction.followup.send(f"🎯 成功關注 **{ID}**，持續時間：**{time_str}**！\n*(註：若是練習舊比賽題目，AtCoder Problems 爬蟲約需數分鐘同步，同步完成後會自動播報)*")
+        await interaction.followup.send(f"🎯 成功關注 **{ID}**，持續時間：**{time_str}**！")
 
     async def ac_focus_update(self, channel: discord.TextChannel, params: dict):
         """定期檢查是否有新提交並發送通知"""
