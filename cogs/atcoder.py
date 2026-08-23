@@ -82,7 +82,7 @@ def load_problems_data():
 
 
 def get_contest_name(contest_id: str) -> str:
-    """取得 AtCoder 比賽完整名稱，並快取避免重複請求。"""
+    """取得 AtCoder 比賽完整名稱，優先使用 Kenkoooo contests.json 並快取。"""
     if not contest_id:
         return "Unknown Contest"
 
@@ -90,6 +90,25 @@ def get_contest_name(contest_id: str) -> str:
         return contest_name_cache[contest_id]
 
     contest_name = contest_id.upper()
+
+    try:
+        res = requests.get(
+            "https://kenkoooo.com/atcoder/resources/contests.json",
+            timeout=10
+        )
+        if res.status_code == 200:
+            for contest in res.json():
+                cid = contest.get("id")
+                title = contest.get("title")
+                if cid and title:
+                    contest_name_cache[cid] = title
+
+            if contest_id in contest_name_cache:
+                return contest_name_cache[contest_id]
+    except Exception as e:
+        print(f"[AtCoder] 載入比賽名稱資料失敗: {e}")
+
+    # contests.json 尚未收錄或暫時不可用時，再直接從 AtCoder 比賽頁取得名稱
     try:
         res = requests.get(f"https://atcoder.jp/contests/{contest_id}", timeout=5)
         if res.status_code == 200:
@@ -138,8 +157,15 @@ class AtCoderSubmissionView(discord.ui.View):
         else:
             color = discord.Color.blue()
 
+        contest_name = sub.get("contest_name", sub["contest_id"].upper())
+        contest_url = f"https://atcoder.jp/contests/{sub['contest_id']}"
+
         embed = discord.Embed(
-            title=f"📊 Submission Detail: {sub['problem_title']}",
+            title="📊 AtCoder 提交詳細資訊",
+            description=(
+                f"🏆 **[{contest_name}]({contest_url})**\n"
+                f"**{sub['problem_title']}**"
+            ),
             url=sub["submission_url"],
             color=color
         )
@@ -147,11 +173,6 @@ class AtCoderSubmissionView(discord.ui.View):
         embed.add_field(
             name="👤 Player",
             value=f"[{self.player}](https://atcoder.jp/users/{self.player})",
-            inline=False
-        )
-        embed.add_field(
-            name="🏆 Contest",
-            value=f"[{sub.get('contest_name', sub['contest_id'].upper())}](https://atcoder.jp/contests/{sub['contest_id']})",
             inline=False
         )
         embed.add_field(
