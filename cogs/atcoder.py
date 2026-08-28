@@ -19,6 +19,8 @@ ac_focus_CD = 20  # 每 20 秒檢查一次
 # 快取 Kenkoooo 題目與難度資料
 problems_cache: List[Dict[str, Any]] = []
 problem_models_cache: Dict[str, Dict[str, Any]] = {}
+# (contest_id, problem_id) -> 該比賽中的題號；避免同一題被重複收錄到不同比賽時題號被覆蓋
+contest_problem_index_cache: Dict[tuple, str] = {}
 cache_last_updated = 0
 contest_name_cache: Dict[str, str] = {}
 
@@ -62,15 +64,34 @@ def format_verdict(verdict: str) -> str:
 
 
 def load_problems_data():
-    """載入或更新 Kenkoooo 題目與難度資料"""
-    global problems_cache, problem_models_cache, cache_last_updated
+    """載入或更新 Kenkoooo 題目、題號對應與難度資料"""
+    global problems_cache, problem_models_cache, contest_problem_index_cache, cache_last_updated
     now = time.time()
     # 每天只重新抓取一次 (86400 秒)
-    if not problems_cache or (now - cache_last_updated > 86400):
+    if (
+        not problems_cache
+        or not contest_problem_index_cache
+        or (now - cache_last_updated > 86400)
+    ):
         try:
             p_res = requests.get("https://kenkoooo.com/atcoder/resources/problems.json", timeout=10)
             if p_res.status_code == 200:
                 problems_cache = p_res.json()
+
+            # 題號不能只用 problem_id 判斷。
+            # 同一題可能被收錄在 ABC、Daily Training 等不同 contest，題號會不同。
+            cp_res = requests.get(
+                "https://kenkoooo.com/atcoder/resources/contest-problem.json",
+                timeout=10
+            )
+            if cp_res.status_code == 200:
+                contest_problem_index_cache = {
+                    (item["contest_id"], item["problem_id"]): item["problem_index"]
+                    for item in cp_res.json()
+                    if item.get("contest_id")
+                    and item.get("problem_id")
+                    and item.get("problem_index")
+                }
 
             m_res = requests.get("https://kenkoooo.com/atcoder/resources/problem-models.json", timeout=10)
             if m_res.status_code == 200:
@@ -414,9 +435,16 @@ class AtCoder(commands.Cog):
             point = sub.get("point", 0.0)
             point_str = f"{int(point)}" if point.is_integer() else f"{point}"
 
-            # 尋找題目名稱與題號
+            # 尋找題目名稱與「這一場比賽中的」題號。
+            # 不能只用 problem_id -> problem_index，因為同一題可能在不同 contest 中有不同題號。
             prob_info = prob_dict.get(prob_id, {})
-            prob_index = prob_info.get("problem_index", "")
+            prob_index = contest_problem_index_cache.get((contest_id, prob_id), "")
+
+            # contest-problem.json 暫時抓不到時，只在 problems.json 的 contest 也吻合時才 fallback，
+            # 避免把別場比賽（例如 Daily Training）的 I 題誤套到 ABC340 的 F 題。
+            if not prob_index and prob_info.get("contest_id") == contest_id:
+                prob_index = prob_info.get("problem_index", "")
+
             prob_name = prob_info.get("name", prob_id)
             if prob_index:
                 prob_title = f"{prob_index} - {prob_name}"
