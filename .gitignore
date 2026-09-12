@@ -8,6 +8,7 @@ bin/
 cogs/__pycache__/
 img/user_avatar/
 downloads/
+uploaded_files/
 
 doc/
 myenv/

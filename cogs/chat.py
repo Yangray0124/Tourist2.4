@@ -1,5 +1,6 @@
 import base64
 import os
+import sys
 import re
 import io
 import fitz  # PyMuPDF 的套件名稱是 fitz
@@ -17,6 +18,13 @@ from bs4 import BeautifulSoup
 from typing import Optional
 from keys import gemini_api_key
 import shutil
+import uuid
+import json
+import mimetypes
+import html
+from pathlib import Path
+from urllib.parse import quote
+from aiohttp import web
 
 hd = {'Content-Type': 'application/json'}
 js = {
@@ -106,6 +114,36 @@ gemini_model = "v1/models/gemini-2.5-flash-lite"
 gemini_image_model = "v1/models/gemini-2.5-flash-lite"
 
 
+# ==================== Tourist 自架檔案上傳 / 下載 ====================
+# 對外公開網址，例如：
+#   https://files.example.com
+#   https://xxxx.trycloudflare.com
+# 預設直接使用目前 Tourist AWS 對外可連的 15.152.171.240:5173。
+UPLOAD_BASE_URL = os.getenv("UPLOAD_BASE_URL", "http://15.152.171.240:5173").rstrip("/")
+UPLOAD_BIND_HOST = os.getenv("UPLOAD_BIND_HOST", "0.0.0.0")
+UPLOAD_PORT = int(os.getenv("UPLOAD_PORT", "5173"))
+UPLOAD_ROOT = Path(os.getenv("UPLOAD_ROOT", "./uploaded_files"))
+UPLOAD_MAX_BYTES = int(os.getenv("UPLOAD_MAX_BYTES", str(2 * 1024 * 1024 * 1024)))  # 預設 2GB
+UPLOAD_PAGE_TOKEN_TTL = 15 * 60  # 上傳頁面連結 15 分鐘失效
+UPLOAD_CLEANUP_INTERVAL_MINUTES = 5
+DISCORD_INLINE_FILE_LIMIT = 20 * 1024 * 1024  # 2026/08 起一般使用者上限為 20MB；實際 bot API 若較低會自動 fallback
+DISCORD_PREVIEW_BATCH_LIMIT = 20 * 1024 * 1024  # 每則 PDF 預覽訊息保守控制在 20MB 內
+DISCORD_MAX_ATTACHMENTS_PER_MESSAGE = 10  # Discord API 每則訊息最多 10 個附件
+
+# 預設只在 Linux（AWS）啟用上傳網站；Windows 本機不開任何 upload port。
+# 若之後真的需要手動覆寫，可設定環境變數 UPLOAD_ENABLED=1 或 0。
+_default_upload_enabled = sys.platform.startswith("linux")
+_env_upload_enabled = os.getenv("UPLOAD_ENABLED")
+if _env_upload_enabled is None:
+    UPLOAD_ENABLED = _default_upload_enabled
+else:
+    UPLOAD_ENABLED = _env_upload_enabled.strip().lower() in {"1", "true", "yes", "on"}
+
+if UPLOAD_ENABLED:
+    UPLOAD_ROOT.mkdir(parents=True, exist_ok=True)
+# ===================================================================
+
+
 def check(msg):
     for i in range(len(msg)):
         now = msg[i]
@@ -134,187 +172,6 @@ def encode_image(image_path):
 cf_queue = []  # {function, interaction, params{} }
 cf_focus_list = []  # {ID, remain, channel }
 last_submission_id = {}
-cf_contest_name_cache = {}
-cf_contest_cache_last_updated = 0
-cf_contest_cache_lock = asyncio.Lock()
-
-
-async def get_cf_contest_name(contest_id):
-    global cf_contest_cache_last_updated
-
-    if contest_id is None:
-        return None
-
-    if contest_id in cf_contest_name_cache:
-        return cf_contest_name_cache[contest_id]
-
-    async with cf_contest_cache_lock:
-        if contest_id in cf_contest_name_cache:
-            return cf_contest_name_cache[contest_id]
-
-        now = time.time()
-
-        # 優先一次抓完整的 Codeforces contest list 並快取，
-        # 避免每次按「查看詳細資訊」都呼叫 contest.standings。
-        if not cf_contest_name_cache or now - cf_contest_cache_last_updated > 21600:
-            try:
-                contest_req = await asyncio.to_thread(
-                    requests.get,
-                    "https://codeforces.com/api/contest.list?gym=false",
-                    timeout=8
-                )
-
-                if contest_req.status_code == 200:
-                    contest_data = contest_req.json()
-                    if contest_data.get("status") == "OK":
-                        for contest in contest_data.get("result", []):
-                            cid = contest.get("id")
-                            name = contest.get("name")
-                            if cid is not None and name:
-                                cf_contest_name_cache[cid] = name
-                        cf_contest_cache_last_updated = now
-                    else:
-                        print(f"取得 Codeforces 比賽列表失敗: {contest_data.get('comment', 'Unknown Error')}")
-            except Exception as e:
-                print(f"取得 Codeforces 比賽列表失敗: {e}")
-
-        if contest_id in cf_contest_name_cache:
-            return cf_contest_name_cache[contest_id]
-
-        # API 暫時失敗（例如 rate limit）時，再直接從 contest 頁面抓名稱當 fallback。
-        try:
-            page_req = await asyncio.to_thread(
-                requests.get,
-                f"https://codeforces.com/contest/{contest_id}",
-                timeout=8,
-                headers={"User-Agent": "Mozilla/5.0"}
-            )
-
-            if page_req.status_code == 200:
-                soup = BeautifulSoup(page_req.text, "html.parser")
-
-                caption = soup.select_one(".contest-name")
-                if caption:
-                    contest_name = caption.get_text(" ", strip=True)
-                else:
-                    title = soup.title.get_text(" ", strip=True) if soup.title else ""
-                    contest_name = title
-                    if contest_name.startswith("Dashboard - "):
-                        contest_name = contest_name[len("Dashboard - "):]
-                    if contest_name.endswith(" - Codeforces"):
-                        contest_name = contest_name[:-len(" - Codeforces")]
-                    contest_name = contest_name.strip()
-
-                if contest_name and contest_name != f"Contest {contest_id}":
-                    cf_contest_name_cache[contest_id] = contest_name
-                    return contest_name
-        except Exception as e:
-            print(f"從 Codeforces 頁面取得比賽名稱失敗 ({contest_id}): {e}")
-
-    return None
-
-
-class CFSubmissionView(discord.ui.View):
-    def __init__(self, player: str, submission: dict):
-        super().__init__(timeout=86400)
-        self.player = player
-        self.submission = submission
-
-    @discord.ui.button(
-        label="查看詳細資訊",
-        emoji="📊",
-        style=discord.ButtonStyle.primary
-    )
-    async def show_details(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.defer(ephemeral=True)
-
-        sub = self.submission
-        raw_verdict = sub["problem_verdict"]
-
-        verdict_names = {
-            "OK": "Accepted",
-            "WRONG_ANSWER": "Wrong Answer",
-            "TIME_LIMIT_EXCEEDED": "Time Limit Exceeded",
-            "MEMORY_LIMIT_EXCEEDED": "Memory Limit Exceeded",
-            "RUNTIME_ERROR": "Runtime Error",
-            "COMPILATION_ERROR": "Compilation Error",
-            "IDLENESS_LIMIT_EXCEEDED": "Idleness Limit Exceeded",
-            "SKIPPED": "Skipped",
-            "FAILED": "Failed",
-            "PARTIAL": "Partial"
-        }
-        verdict = verdict_names.get(raw_verdict, raw_verdict.replace("_", " ").title())
-
-        if raw_verdict == "OK":
-            color = discord.Color.green()
-        elif raw_verdict in {"WRONG_ANSWER", "RUNTIME_ERROR", "COMPILATION_ERROR", "FAILED"}:
-            color = discord.Color.red()
-        elif raw_verdict in {"TIME_LIMIT_EXCEEDED", "MEMORY_LIMIT_EXCEEDED", "IDLENESS_LIMIT_EXCEEDED"}:
-            color = discord.Color.orange()
-        else:
-            color = discord.Color.blue()
-
-        contest_id = sub.get("contest_id")
-        problem_idx = sub["problem_idx"]
-        submission_id = sub["problem_id"]
-
-        contest_name = None
-        contest_url = None
-
-        if contest_id is not None:
-            problem_url = f"https://codeforces.com/contest/{contest_id}/problem/{problem_idx}"
-            submission_url = f"https://codeforces.com/contest/{contest_id}/submission/{submission_id}"
-            contest_url = f"https://codeforces.com/contest/{contest_id}"
-            links = f"[查看題目]({problem_url})　•　[查看提交]({submission_url})"
-
-            contest_name = await get_cf_contest_name(contest_id)
-
-            if not contest_name:
-                contest_name = f"Contest {contest_id}"
-        else:
-            submission_url = f"https://codeforces.com/submissions/{self.player}"
-            links = f"[查看玩家提交紀錄]({submission_url})"
-
-        if contest_name and contest_url:
-            description = (
-                f"🏆 **[{contest_name}]({contest_url})**\n"
-                f"**{problem_idx} - {sub['problem_name']}**"
-            )
-        else:
-            description = f"**{problem_idx} - {sub['problem_name']}**"
-
-        embed = discord.Embed(
-            title="📊 Codeforces 提交詳細資訊",
-            description=description,
-            color=color
-        )
-        embed.add_field(name="👤 玩家", value=self.player, inline=True)
-        embed.add_field(name="📌 結果", value=verdict, inline=True)
-        embed.add_field(name="💻 語言", value=sub.get("language", "Unknown"), inline=True)
-        embed.add_field(name="⏱️ 執行時間", value=f"{sub.get('time_used', 0)} ms", inline=True)
-
-        memory_bytes = sub.get("memory", 0)
-        if memory_bytes >= 1024 * 1024:
-            memory_text = f"{memory_bytes / (1024 * 1024):.2f} MB"
-        else:
-            memory_text = f"{memory_bytes / 1024:.0f} KB"
-        embed.add_field(name="🧠 記憶體", value=memory_text, inline=True)
-
-        rating = sub.get("rating")
-        embed.add_field(name="⭐ 題目難度", value=str(rating) if rating is not None else "Unrated", inline=True)
-
-        passed_tests = sub.get("passed_tests")
-        if passed_tests is not None:
-            embed.add_field(name="🧪 通過測試", value=str(passed_tests), inline=True)
-
-        creation_time = sub.get("creation_time")
-        if creation_time is not None:
-            embed.add_field(name="🕒 提交時間", value=f"<t:{creation_time}:R>", inline=True)
-
-        embed.add_field(name="🔗 連結", value=links, inline=False)
-        embed.set_footer(text=f"Codeforces • Submission #{submission_id}")
-
-        await interaction.followup.send(embed=embed, ephemeral=True)
 
 
 class Chat(commands.Cog):
@@ -323,6 +180,19 @@ class Chat(commands.Cog):
         self.bot = bot
         self.cf_clock.start()
         self.cf_add_focus.start()
+
+        # 新增：Tourist 自架上傳服務。與原本功能完全獨立。
+        self.upload_sessions = {}
+        self.upload_web_runner = None
+        self.upload_web_site = None
+        self.upload_server_task = None
+
+        if UPLOAD_ENABLED:
+            self.upload_server_task = asyncio.create_task(self._start_upload_server())
+            self.upload_cleanup.start()
+            print(f"[Upload] enabled on {sys.platform}; preparing port {UPLOAD_PORT}")
+        else:
+            print(f"[Upload] disabled on {sys.platform}; web server will NOT start")
 
     # @commands.command()
     # async def Hello(self, ctx: commands.Context):
@@ -375,6 +245,781 @@ class Chat(commands.Cog):
                 del_tmp.append(p)
         for p in del_tmp:
             cf_focus_list.remove(p)
+
+    # ==================== Tourist 自架檔案上傳功能 ====================
+
+    async def _start_upload_server(self):
+        """啟動內建 aiohttp server，提供上傳頁面與檔案下載。"""
+        await self.bot.wait_until_ready()
+
+        app = web.Application(client_max_size=UPLOAD_MAX_BYTES)
+        app.router.add_get("/upload/{token}", self._upload_page)
+        app.router.add_post("/upload/{token}", self._upload_receive)
+        app.router.add_get("/files/{file_id}/{filename:.*}", self._download_file)
+        app.router.add_get("/health", self._upload_health)
+
+        self.upload_web_runner = web.AppRunner(app)
+        await self.upload_web_runner.setup()
+        self.upload_web_site = web.TCPSite(
+            self.upload_web_runner,
+            UPLOAD_BIND_HOST,
+            UPLOAD_PORT,
+        )
+
+        try:
+            await self.upload_web_site.start()
+            print(
+                f"[Upload] server started: {UPLOAD_BIND_HOST}:{UPLOAD_PORT} "
+                f"public={UPLOAD_BASE_URL}"
+            )
+        except OSError as e:
+            print(f"[Upload] 無法啟動上傳 server: {e}")
+
+    async def _upload_health(self, request: web.Request):
+        return web.json_response({"ok": True})
+
+    @staticmethod
+    def _safe_upload_filename(filename: str) -> str:
+        filename = os.path.basename(filename or "upload.bin")
+        filename = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", filename).strip(". ")
+        if not filename:
+            filename = "upload.bin"
+
+        # Windows path 與瀏覽器處理都比較穩，保留副檔名並限制長度。
+        stem, ext = os.path.splitext(filename)
+        if len(filename) > 180:
+            filename = stem[: max(1, 180 - len(ext))] + ext
+        return filename
+
+    async def _upload_page(self, request: web.Request):
+        token = request.match_info["token"]
+        session = self.upload_sessions.get(token)
+        now = time.time()
+
+        if not session or session["page_expires_at"] <= now:
+            self.upload_sessions.pop(token, None)
+            return web.Response(
+                text="<h2>這個上傳連結已失效。</h2>",
+                content_type="text/html",
+                status=410,
+            )
+
+        retention_text = session["retention_text"]
+        max_gb = UPLOAD_MAX_BYTES / (1024 ** 3)
+        page_html = f"""<!doctype html>
+<html lang=\"zh-Hant\">
+<head>
+<meta charset=\"utf-8\">
+<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">
+<title>Tourist File Upload</title>
+<style>
+  * {{ box-sizing: border-box; }}
+  :root {{
+    color-scheme: light;
+    --bg: #f2efe7;
+    --card: #fffdf8;
+    --ink: #262621;
+    --muted: #777064;
+    --line: #d9d3c5;
+    --soft: #f7f3e9;
+    --accent: #2e302b;
+  }}
+  body {{
+    margin: 0;
+    min-height: 100vh;
+    display: grid;
+    place-items: center;
+    padding: 24px;
+    font-family: system-ui, -apple-system, \"Segoe UI\", sans-serif;
+    background:
+      radial-gradient(circle at 20% 10%, rgba(255,255,255,.9), transparent 34%),
+      var(--bg);
+    color: var(--ink);
+  }}
+  .card {{
+    width: min(700px, 100%);
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 24px;
+    padding: 30px;
+    box-shadow: 0 20px 70px rgba(55, 48, 36, .10);
+  }}
+  .eyebrow {{
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 14px;
+    color: var(--muted);
+    font-size: 13px;
+    letter-spacing: .04em;
+  }}
+  h1 {{ margin: 0; font-size: clamp(26px, 5vw, 34px); letter-spacing: -.03em; }}
+  .sub {{ margin: 10px 0 24px; color: var(--muted); line-height: 1.65; }}
+  .drop {{
+    border: 1.5px dashed #aaa291;
+    border-radius: 18px;
+    padding: 34px 20px;
+    text-align: center;
+    background: var(--soft);
+    transition: .18s ease;
+  }}
+  .drop:hover {{ border-color: #777064; transform: translateY(-1px); }}
+  input[type=file] {{ max-width: 100%; font: inherit; }}
+  .file-info {{
+    min-height: 22px;
+    margin-top: 12px;
+    color: var(--muted);
+    font-size: 14px;
+    overflow-wrap: anywhere;
+  }}
+  button {{
+    margin-top: 18px;
+    width: 100%;
+    border: 0;
+    border-radius: 14px;
+    padding: 14px 18px;
+    font-size: 16px;
+    font-weight: 750;
+    background: var(--accent);
+    color: white;
+    cursor: pointer;
+    transition: .16s ease;
+  }}
+  button:hover:not(:disabled) {{ transform: translateY(-1px); opacity: .94; }}
+  button:disabled {{ cursor: default; opacity: .55; }}
+  .progress-wrap {{
+    display: none;
+    margin-top: 20px;
+    padding: 16px;
+    border: 1px solid var(--line);
+    background: #fff;
+    border-radius: 16px;
+  }}
+  .progress-head {{
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    align-items: baseline;
+    margin-bottom: 10px;
+  }}
+  .progress-title {{ font-weight: 720; }}
+  .progress-percent {{ font-variant-numeric: tabular-nums; color: var(--muted); }}
+  .track {{
+    height: 10px;
+    overflow: hidden;
+    background: #ebe7dd;
+    border-radius: 999px;
+  }}
+  .bar {{
+    width: 0%;
+    height: 100%;
+    background: #3d4039;
+    border-radius: inherit;
+    transition: width .12s linear;
+  }}
+  .progress-detail {{
+    margin-top: 9px;
+    color: var(--muted);
+    font-size: 13px;
+    font-variant-numeric: tabular-nums;
+  }}
+  .error {{ color: #a33b32; }}
+  .meta {{ margin-top: 18px; font-size: 13px; color: var(--muted); line-height: 1.65; }}
+</style>
+</head>
+<body>
+  <main class=\"card\">
+    <div class=\"eyebrow\">TOURIST · FILE UPLOAD</div>
+    <h1>📤 上傳檔案</h1>
+    <div class=\"sub\">選擇 PDF、圖片、影片或其他檔案。大檔案上傳時會顯示即時進度。</div>
+
+    <form id=\"uploadForm\" method=\"post\" enctype=\"multipart/form-data\">
+      <div class=\"drop\">
+        <input id=\"fileInput\" type=\"file\" name=\"file\" required>
+        <div id=\"fileInfo\" class=\"file-info\">📎 尚未選擇檔案</div>
+      </div>
+      <button id=\"submitButton\" type=\"submit\">🚀 開始上傳</button>
+    </form>
+
+    <section id=\"progressWrap\" class=\"progress-wrap\">
+      <div class=\"progress-head\">
+        <div id=\"progressTitle\" class=\"progress-title\">正在上傳…</div>
+        <div id=\"progressPercent\" class=\"progress-percent\">0%</div>
+      </div>
+      <div class=\"track\"><div id=\"progressBar\" class=\"bar\"></div></div>
+      <div id=\"progressDetail\" class=\"progress-detail\">準備中…</div>
+    </section>
+
+    <div class=\"meta\">
+      保存時間：{html.escape(retention_text)} · 單檔上限：約 {max_gb:.1f} GB<br>
+      此頁面為一次性上傳連結，上傳成功後即失效。
+    </div>
+  </main>
+
+<script>
+  const form = document.getElementById('uploadForm');
+  const fileInput = document.getElementById('fileInput');
+  const fileInfo = document.getElementById('fileInfo');
+  const button = document.getElementById('submitButton');
+  const wrap = document.getElementById('progressWrap');
+  const title = document.getElementById('progressTitle');
+  const percent = document.getElementById('progressPercent');
+  const bar = document.getElementById('progressBar');
+  const detail = document.getElementById('progressDetail');
+
+  function formatBytes(bytes) {{
+    if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
+    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    const i = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+    const value = bytes / Math.pow(1024, i);
+    return `${{value.toFixed(i >= 2 ? 2 : 1)}} ${{units[i]}}`;
+  }}
+
+  fileInput.addEventListener('change', () => {{
+    const file = fileInput.files && fileInput.files[0];
+    fileInfo.textContent = file ? `📎 ${{file.name}} · ${{formatBytes(file.size)}}` : '📎 尚未選擇檔案';
+  }});
+
+  form.addEventListener('submit', (event) => {{
+    event.preventDefault();
+    const file = fileInput.files && fileInput.files[0];
+    if (!file) return;
+
+    button.disabled = true;
+    button.textContent = '⬆️ 上傳中…';
+    fileInput.disabled = true;
+    wrap.style.display = 'block';
+    title.textContent = '⬆️ 正在上傳…';
+    title.classList.remove('error');
+    percent.textContent = '0%';
+    bar.style.width = '0%';
+    detail.textContent = '正在建立連線…';
+
+    const data = new FormData(form);
+    // fileInput disabled 後不會被 FormData(form) 收入，因此手動補回檔案。
+    data.set('file', file, file.name);
+
+    const xhr = new XMLHttpRequest();
+    const startedAt = performance.now();
+
+    xhr.open('POST', window.location.href, true);
+
+    xhr.upload.onprogress = (e) => {{
+      if (!e.lengthComputable) {{
+        detail.textContent = `${{formatBytes(e.loaded)}} 已上傳`;
+        return;
+      }}
+
+      const p = Math.min(100, (e.loaded / e.total) * 100);
+      const elapsed = Math.max((performance.now() - startedAt) / 1000, 0.1);
+      const speed = e.loaded / elapsed;
+
+      percent.textContent = `${{p.toFixed(p < 10 ? 1 : 0)}}%`;
+      bar.style.width = `${{p}}%`;
+      detail.textContent = `${{formatBytes(e.loaded)}} / ${{formatBytes(e.total)}} · ${{formatBytes(speed)}}/s`;
+
+      if (p >= 100) {{
+        title.textContent = '💾 檔案已傳送，正在完成儲存…';
+        detail.textContent = '請稍候，不要關閉此頁面。';
+      }}
+    }};
+
+    xhr.onload = () => {{
+      if (xhr.status >= 200 && xhr.status < 300) {{
+        document.open();
+        document.write(xhr.responseText);
+        document.close();
+        return;
+      }}
+
+      title.textContent = '上傳失敗';
+      title.classList.add('error');
+      percent.textContent = '';
+      detail.textContent = xhr.responseText || `伺服器回傳錯誤 ${{xhr.status}}`;
+      button.disabled = false;
+      button.textContent = '重新上傳';
+      fileInput.disabled = false;
+    }};
+
+    xhr.onerror = () => {{
+      title.textContent = '連線中斷';
+      title.classList.add('error');
+      percent.textContent = '';
+      detail.textContent = '無法連線到伺服器，請確認網路後再試一次。';
+      button.disabled = false;
+      button.textContent = '重新上傳';
+      fileInput.disabled = false;
+    }};
+
+    xhr.send(data);
+  }});
+</script>
+</body>
+</html>"""
+        return web.Response(text=page_html, content_type="text/html")
+    async def _upload_receive(self, request: web.Request):
+        token = request.match_info["token"]
+        session = self.upload_sessions.get(token)
+        now = time.time()
+
+        if not session or session["page_expires_at"] <= now:
+            self.upload_sessions.pop(token, None)
+            return web.Response(text="上傳連結已失效。", status=410)
+
+        try:
+            reader = await request.multipart()
+            file_field = None
+
+            while True:
+                part = await reader.next()
+                if part is None:
+                    break
+                if part.name == "file":
+                    file_field = part
+                    break
+
+            if file_field is None or not file_field.filename:
+                return web.Response(text="沒有收到檔案。", status=400)
+
+            original_filename = file_field.filename
+            filename = self._safe_upload_filename(original_filename)
+            file_id = uuid.uuid4().hex
+            file_dir = UPLOAD_ROOT / file_id
+            file_dir.mkdir(parents=True, exist_ok=False)
+            file_path = file_dir / filename
+
+            total_size = 0
+            with open(file_path, "wb") as f:
+                while True:
+                    chunk = await file_field.read_chunk(size=1024 * 1024)
+                    if not chunk:
+                        break
+                    total_size += len(chunk)
+                    if total_size > UPLOAD_MAX_BYTES:
+                        f.close()
+                        shutil.rmtree(file_dir, ignore_errors=True)
+                        return web.Response(text="檔案超過大小限制。", status=413)
+                    f.write(chunk)
+
+            created_at = int(time.time())
+            expires_at = created_at + session["retention_seconds"]
+            mime_type = (
+                file_field.headers.get("Content-Type")
+                or mimetypes.guess_type(filename)[0]
+                or "application/octet-stream"
+            )
+
+            metadata = {
+                "file_id": file_id,
+                "filename": filename,
+                "original_filename": original_filename,
+                "size": total_size,
+                "mime_type": mime_type,
+                "created_at": created_at,
+                "expires_at": expires_at,
+                "channel_id": session["channel_id"],
+                "guild_id": session.get("guild_id"),
+                "requester_id": session["requester_id"],
+            }
+            (file_dir / "metadata.json").write_text(
+                json.dumps(metadata, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+
+            # 一次性 token：只允許成功上傳一個檔案。
+            self.upload_sessions.pop(token, None)
+
+            # 回 Discord 的工作不阻塞瀏覽器回應。
+            asyncio.create_task(self._announce_uploaded_file(metadata, file_path))
+
+            download_url = f"{UPLOAD_BASE_URL}/files/{file_id}/{quote(filename)}"
+            size = total_size
+            if size < 1024 * 1024:
+                size_str = f"{size / 1024:.1f} KB"
+            elif size < 1024 * 1024 * 1024:
+                size_str = f"{size / (1024 * 1024):.2f} MB"
+            else:
+                size_str = f"{size / (1024 ** 3):.2f} GB"
+
+            success_html = f"""<!doctype html>
+<html lang=\"zh-Hant\">
+<head>
+<meta charset=\"utf-8\">
+<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">
+<title>Upload complete</title>
+<style>
+  * {{ box-sizing: border-box; }}
+  body {{
+    margin: 0;
+    min-height: 100vh;
+    display: grid;
+    place-items: center;
+    padding: 24px;
+    font-family: system-ui, -apple-system, \"Segoe UI\", sans-serif;
+    background: #f2efe7;
+    color: #262621;
+  }}
+  .card {{
+    width: min(620px, 100%);
+    padding: 34px;
+    border: 1px solid #d9d3c5;
+    border-radius: 24px;
+    background: #fffdf8;
+    box-shadow: 0 20px 70px rgba(55, 48, 36, .10);
+    text-align: center;
+  }}
+  .check {{
+    width: 62px;
+    height: 62px;
+    display: grid;
+    place-items: center;
+    margin: 0 auto 18px;
+    border-radius: 50%;
+    background: #e6eee4;
+    font-size: 30px;
+  }}
+  h1 {{ margin: 0; font-size: 30px; letter-spacing: -.03em; }}
+  .sub {{ margin: 10px 0 22px; color: #746e63; line-height: 1.6; }}
+  .file {{
+    padding: 15px 16px;
+    border: 1px solid #e0dbcf;
+    border-radius: 15px;
+    background: #f8f5ed;
+    text-align: left;
+    overflow-wrap: anywhere;
+  }}
+  .name {{ font-weight: 720; }}
+  .size {{ margin-top: 4px; color: #81796c; font-size: 13px; }}
+  .download {{
+    display: block;
+    margin-top: 18px;
+    padding: 14px 18px;
+    border-radius: 14px;
+    background: #2e302b;
+    color: white;
+    text-decoration: none;
+    font-weight: 750;
+  }}
+  .hint {{ margin-top: 16px; color: #81796c; font-size: 13px; }}
+</style>
+</head>
+<body>
+  <main class=\"card\">
+    <div class=\"check\">✅</div>
+    <h1>上傳完成</h1>
+    <div class=\"sub\">檔案已儲存，並正在回傳到 Discord。</div>
+    <div class=\"file\">
+      <div class=\"name\">{html.escape(filename)}</div>
+      <div class=\"size\">{html.escape(size_str)}</div>
+    </div>
+    <a class=\"download\" href=\"{html.escape(download_url)}\">⬇️ 下載原檔</a>
+    <div class=\"hint\">你現在可以關閉這個頁面。</div>
+  </main>
+</body>
+</html>"""
+            return web.Response(text=success_html, content_type="text/html")
+
+        except Exception as e:
+            print(f"[Upload] 接收檔案失敗: {e}")
+            return web.Response(text="上傳失敗，請稍後再試。", status=500)
+    async def _download_file(self, request: web.Request):
+        file_id = request.match_info["file_id"]
+        requested_filename = request.match_info.get("filename", "")
+
+        # UUID hex only，避免 path traversal。
+        if not re.fullmatch(r"[0-9a-f]{32}", file_id):
+            raise web.HTTPNotFound()
+
+        file_dir = UPLOAD_ROOT / file_id
+        metadata_path = file_dir / "metadata.json"
+        if not metadata_path.exists():
+            raise web.HTTPNotFound()
+
+        try:
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        except Exception:
+            raise web.HTTPNotFound()
+
+        if int(metadata.get("expires_at", 0)) <= int(time.time()):
+            shutil.rmtree(file_dir, ignore_errors=True)
+            raise web.HTTPGone(text="這個檔案已經過期。")
+
+        filename = metadata.get("filename")
+        if not filename or requested_filename != filename:
+            raise web.HTTPNotFound()
+
+        file_path = file_dir / filename
+        if not file_path.exists():
+            raise web.HTTPNotFound()
+
+        return web.FileResponse(
+            path=file_path,
+            headers={
+                "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"
+            },
+        )
+
+    async def _announce_uploaded_file(self, metadata: dict, file_path: Path):
+        """把上傳結果送回原 Discord channel，並建立 thread。"""
+        try:
+            channel = self.bot.get_channel(metadata["channel_id"])
+            if channel is None:
+                channel = await self.bot.fetch_channel(metadata["channel_id"])
+
+            filename = metadata["filename"]
+            file_id = metadata["file_id"]
+            expires_at = metadata["expires_at"]
+            size = metadata["size"]
+            download_url = f"{UPLOAD_BASE_URL}/files/{file_id}/{quote(filename)}"
+
+            if size < 1024 * 1024:
+                size_str = f"{size / 1024:.1f} KB"
+            elif size < 1024 * 1024 * 1024:
+                size_str = f"{size / (1024 * 1024):.2f} MB"
+            else:
+                size_str = f"{size / (1024 ** 3):.2f} GB"
+
+            # 主頻道只保留最重要的兩件事：檔名與直接下載。
+            # 檔名刻意不做超連結，避免同一張卡片出現兩個下載入口。
+            embed = discord.Embed(
+                title="✅ 檔案上傳完成",
+                description=(
+                    f"**{filename}**\n\n"
+                    f"**[點我直接下載]({download_url})**"
+                ),
+                color=discord.Color.green(),
+            )
+
+            sent = await channel.send(embed=embed)
+
+            thread_name = filename if len(filename) <= 70 else filename[:67] + "..."
+            thread = await sent.create_thread(
+                name=f"📎 {thread_name}",
+                auto_archive_duration=60,
+            )
+
+            # 詳細資訊集中在討論串內；這裡不再另外放下載超連結。
+            thread_embed = discord.Embed(
+                title="📋 檔案資訊",
+                description=f"**{filename}**",
+                color=discord.Color.blue(),
+            )
+            thread_embed.add_field(name="📦 大小", value=size_str, inline=True)
+            thread_embed.add_field(
+                name="🧩 類型",
+                value=metadata.get("mime_type") or "application/octet-stream",
+                inline=True,
+            )
+            thread_embed.add_field(
+                name="👤 上傳者",
+                value=f"<@{metadata.get('requester_id')}>",
+                inline=True,
+            )
+            thread_embed.add_field(
+                name="🕒 上傳時間",
+                value=f"<t:{int(metadata.get('created_at', 0))}:F>",
+                inline=True,
+            )
+            thread_embed.add_field(
+                name="⏳ 保留至",
+                value=f"<t:{expires_at}:F>  ·  <t:{expires_at}:R>",
+                inline=False,
+            )
+            thread_embed.set_footer(text=f"Tourist File Storage • {file_id[:8]}")
+            await thread.send(embed=thread_embed)
+
+            # 20MB 以內先嘗試保留一份 Discord 原檔。
+            # Discord 的 bot/API 實際限制可能依伺服器而較低，因此失敗時自動退回自架下載連結。
+            if size <= DISCORD_INLINE_FILE_LIMIT:
+                try:
+                    await thread.send(
+                        content="📥 **原檔案：**",
+                        file=discord.File(str(file_path), filename=filename),
+                    )
+                except discord.HTTPException as e:
+                    print(f"[Upload] Discord 原檔附件被拒絕 ({filename}): {e}")
+                    await thread.send(
+                        "📦 Discord 無法直接附加這個原檔，請使用上方下載連結。"
+                    )
+            else:
+                inline_mb = DISCORD_INLINE_FILE_LIMIT // (1024 * 1024)
+                await thread.send(
+                    f"📦 原檔超過 {inline_mb} MB，不另外附加到 Discord，請使用上方下載連結。"
+                )
+
+            # PDF 才做每頁截圖；圖片、影片、其他檔案完全不轉換。
+            if filename.lower().endswith(".pdf"):
+                await self._preview_local_pdf(thread, file_path, filename)
+
+        except Exception as e:
+            print(f"[Upload] Discord 回傳失敗: {e}")
+
+    async def _preview_local_pdf(self, thread, file_path: Path, filename: str):
+        """沿用原本 PDF -> PNG 分頁預覽行為。"""
+        doc = None
+        try:
+            doc = fitz.open(str(file_path))
+
+            if len(doc) > 1000:
+                await thread.send(
+                    f"這份 PDF 有 {len(doc)} 頁，超過 1000 頁限制，不進行分頁預覽。"
+                )
+                return
+
+            await thread.send(f"📄 總共 {len(doc)} 頁，開始產生 PDF 分頁預覽...")
+
+            batch_files = []
+            batch_size = 0
+            batch_start_page = 1
+
+            for page_num in range(len(doc)):
+                page = doc.load_page(page_num)
+                pix = page.get_pixmap(dpi=150)
+                img_bytes = pix.tobytes("png")
+                img_size = len(img_bytes)
+
+                if len(batch_files) == DISCORD_MAX_ATTACHMENTS_PER_MESSAGE or (batch_size + img_size) > DISCORD_PREVIEW_BATCH_LIMIT:
+                    if batch_files:
+                        end_page = page_num
+                        content_msg = (
+                            f"第 {batch_start_page} - {end_page} 頁"
+                            if batch_start_page != end_page
+                            else f"第 {batch_start_page} 頁"
+                        )
+                        await thread.send(content=content_msg, files=batch_files)
+                        await asyncio.sleep(1)
+
+                    batch_files = []
+                    batch_size = 0
+                    batch_start_page = page_num + 1
+
+                batch_files.append(
+                    discord.File(
+                        fp=io.BytesIO(img_bytes),
+                        filename=f"page_{page_num + 1}.png",
+                    )
+                )
+                batch_size += img_size
+
+            if batch_files:
+                end_page = len(doc)
+                content_msg = (
+                    f"第 {batch_start_page} - {end_page} 頁"
+                    if batch_start_page != end_page
+                    else f"第 {batch_start_page} 頁"
+                )
+                await thread.send(content=content_msg, files=batch_files)
+
+            await thread.send("✅ PDF 分頁預覽完成。")
+
+        except Exception as e:
+            print(f"[Upload] PDF 預覽失敗 {filename}: {e}")
+            await thread.send("❌ PDF 分頁預覽失敗，但原始下載連結仍可使用。")
+        finally:
+            if doc is not None:
+                doc.close()
+
+    @tasks.loop(minutes=UPLOAD_CLEANUP_INTERVAL_MINUTES)
+    async def upload_cleanup(self):
+        """固定掃描過期 upload token 與本機檔案。"""
+        now = int(time.time())
+
+        # 清除還沒使用、已經過期的上傳頁 token。
+        for token, session in list(self.upload_sessions.items()):
+            if session["page_expires_at"] <= now:
+                self.upload_sessions.pop(token, None)
+
+        if not UPLOAD_ROOT.exists():
+            return
+
+        removed = 0
+        for file_dir in UPLOAD_ROOT.iterdir():
+            if not file_dir.is_dir():
+                continue
+
+            metadata_path = file_dir / "metadata.json"
+            if not metadata_path.exists():
+                continue
+
+            try:
+                metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+                if int(metadata.get("expires_at", 0)) <= now:
+                    shutil.rmtree(file_dir, ignore_errors=True)
+                    removed += 1
+            except Exception as e:
+                print(f"[Upload] cleanup 讀取 metadata 失敗 {file_dir}: {e}")
+
+        if removed:
+            print(f"[Upload] cleanup removed {removed} expired file(s)")
+
+    @upload_cleanup.before_loop
+    async def before_upload_cleanup(self):
+        await self.bot.wait_until_ready()
+
+    @app_commands.command(name="上傳檔案", description="產生一個 Tourist 檔案上傳頁面")
+    @app_commands.describe(保留時間="檔案與下載連結要保留多久")
+    @app_commands.choices(
+        保留時間=[
+            Choice(name="1 小時", value=3600),
+            Choice(name="6 小時", value=3600 * 6),
+            Choice(name="1 天", value=3600 * 24),
+            Choice(name="3 天", value=3600 * 24 * 3),
+            Choice(name="7 天", value=3600 * 24 * 7),
+            Choice(name="30 天", value=3600 * 24 * 30),
+        ]
+    )
+    async def upload_file_command(
+        self,
+        interaction: discord.Interaction,
+        保留時間: Choice[int],
+    ):
+        if not UPLOAD_ENABLED:
+            await interaction.response.send_message(
+                "📤 檔案上傳功能目前只在 AWS / Linux 主機啟用；這台 Windows 本機不會開上傳網站。",
+                ephemeral=True,
+            )
+            return
+
+        token = uuid.uuid4().hex + uuid.uuid4().hex
+        retention_map = {
+            3600: "1 小時",
+            3600 * 6: "6 小時",
+            3600 * 24: "1 天",
+            3600 * 24 * 3: "3 天",
+            3600 * 24 * 7: "7 天",
+            3600 * 24 * 30: "30 天",
+        }
+
+        self.upload_sessions[token] = {
+            "channel_id": interaction.channel_id,
+            "guild_id": interaction.guild_id,
+            "requester_id": interaction.user.id,
+            "retention_seconds": 保留時間.value,
+            "retention_text": retention_map.get(保留時間.value, f"{保留時間.value} 秒"),
+            "page_expires_at": int(time.time()) + UPLOAD_PAGE_TOKEN_TTL,
+        }
+
+        upload_url = f"{UPLOAD_BASE_URL}/upload/{token}"
+        page_expires_at = self.upload_sessions[token]["page_expires_at"]
+
+        # 指令回覆只凸顯「打開上傳頁面」，其他細節不塞在主卡片。
+        embed = discord.Embed(
+            title="📤 上傳檔案",
+            description=f"**[🌐 點我打開上傳頁面]({upload_url})**",
+            color=discord.Color.blue(),
+        )
+        embed.set_footer(
+            text=(
+                f"一次性連結 • {self.upload_sessions[token]['retention_text']}後自動刪除"
+            )
+        )
+
+        await interaction.response.send_message(
+            embed=embed,
+            ephemeral=True,
+        )
+
+    # =================================================================
 
     async def test(self, interaction: discord.Interaction, params: dict):
         await interaction.channel.send("test")
@@ -581,18 +1226,10 @@ class Chat(commands.Cog):
         for i in range(count):
             if info["result"][i]["id"] == last_submission_id.get(ID):
                 break
-            sub = info["result"][i]
-            l.append({"problem_id": sub["id"],
-                      "contest_id": sub.get("contestId"),
-                      "problem_idx": sub["problem"]["index"],
-                      "problem_name": sub["problem"]["name"],
-                      "problem_verdict": sub["verdict"],
-                      "rating": sub["problem"].get("rating"),
-                      "language": sub.get("programmingLanguage", "Unknown"),
-                      "time_used": sub.get("timeConsumedMillis", 0),
-                      "memory": sub.get("memoryConsumedBytes", 0),
-                      "passed_tests": sub.get("passedTestCount"),
-                      "creation_time": sub.get("creationTimeSeconds")})
+            l.append({"problem_id": info["result"][i]["id"],
+                      "problem_idx": info["result"][i]["problem"]["index"],
+                      "problem_name": info["result"][i]["problem"]["name"],
+                      "problem_verdict": info["result"][i]["verdict"]})
                       
         for i in range(len(l)):
             if l[i]["problem_verdict"] != "TESTING":
@@ -605,8 +1242,7 @@ class Chat(commands.Cog):
                 continue
             if verdict == "OK":
                 verdict = "Accepted"
-            view = CFSubmissionView(ID, l[i])
-            await channel.send(f" **{ID}** 提交了 **{l[i]['problem_idx']} - {l[i]['problem_name']}** ，結果是 ***{verdict.title()}*** ！", view=view)
+            await channel.send(f" **{ID}** 提交了 **{l[i]['problem_idx']} - {l[i]['problem_name']}** ，結果是 ***{verdict.title()}*** ！")
 
     async def cf_get_random_problem(self, interaction: discord.Interaction, params: dict):
         print("cf_get_random_problem")
@@ -706,7 +1342,6 @@ class Chat(commands.Cog):
             Choice(name="1hr", value=3600),
             Choice(name="2hr", value=3600*2),
             Choice(name="3hr", value=3600*3),
-            Choice(name="1天", value=3600*24),
         ]
     )
     async def cf_focus(self, interaction: discord.Interaction, id: str, 時間: Choice[int]):
