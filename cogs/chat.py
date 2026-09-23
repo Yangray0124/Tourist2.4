@@ -1005,7 +1005,7 @@ class Chat(commands.Cog):
         # 指令回覆只凸顯「打開上傳頁面」，其他細節不塞在主卡片。
         embed = discord.Embed(
             title="📤 上傳檔案",
-            description=f"**[🌐 點我打開上傳頁面]({upload_url})**",
+            description=f"**[點我打開上傳頁面]({upload_url})**",
             color=discord.Color.blue(),
         )
         embed.set_footer(
