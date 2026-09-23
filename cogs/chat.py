@@ -1167,6 +1167,7 @@ class Chat(commands.Cog):
         print("cf_focus_setup")
         ID = params["ID"]
         sec = params["sec"]
+        duration_text = "7天" if sec == 3600 * 24 * 7 else f"{sec//3600}小時"
         
         try:
             # 加上 timeout 保護
@@ -1185,7 +1186,7 @@ class Chat(commands.Cog):
         for p in cf_focus_list:
             if p["ID"] == ID:
                 p["remain"] = sec
-                await interaction.followup.send(f"繼續關注 **{ID}** 成功，持續{sec//3600}小時")
+                await interaction.followup.send(f"繼續關注 **{ID}** 成功，持續{duration_text}")
                 return
                 
         # 確認有紀錄再加入關注列表與賦值
@@ -1196,7 +1197,7 @@ class Chat(commands.Cog):
         cf_focus_list.append({"ID": ID, "remain": sec, "channel": interaction.channel})
         last_submission_id[ID] = info["result"][0]["id"]
         
-        await interaction.followup.send(f"關注 **{ID}** 成功，持續{sec//3600}小時")
+        await interaction.followup.send(f"關注 **{ID}** 成功，持續{duration_text}")
 
     async def cf_focus_update(self, channel: discord.TextChannel, params: dict):
         ID = params["ID"]
@@ -1342,6 +1343,7 @@ class Chat(commands.Cog):
             Choice(name="1hr", value=3600),
             Choice(name="2hr", value=3600*2),
             Choice(name="3hr", value=3600*3),
+            Choice(name="7天", value=3600*24*7),
         ]
     )
     async def cf_focus(self, interaction: discord.Interaction, id: str, 時間: Choice[int]):

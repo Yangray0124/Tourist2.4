@@ -327,6 +327,9 @@ class AtCoder(commands.Cog):
         """開始關注某位玩家"""
         ID = params["ID"]
         sec = params["sec"]
+        time_str = f"{sec // 86400} 天" if sec >= 86400 and sec % 86400 == 0 else (
+            f"{sec // 3600} 小時" if sec >= 3600 else f"{sec // 60} 分鐘"
+        )
 
         # 1. 檢查該用戶在 AtCoder 是否存在
         try:
@@ -343,7 +346,6 @@ class AtCoder(commands.Cog):
             if p["ID"].lower() == ID.lower():
                 p["remain"] = sec
                 p["channel"] = interaction.channel
-                time_str = f"{sec//3600} 小時" if sec >= 3600 else f"{sec//60} 分鐘"
                 await interaction.followup.send(f"🔄 繼續關注 **{ID}** 成功，持續時間設定為 **{time_str}**")
                 return
 
@@ -383,7 +385,6 @@ class AtCoder(commands.Cog):
             "start_time": int(time.time()) - 3600  # 記錄開始時間
         })
 
-        time_str = f"{sec//3600} 小時" if sec >= 3600 else f"{sec//60} 分鐘"
         await interaction.followup.send(f"🎯 成功關注 **{ID}**，持續時間：**{time_str}**！")
 
     async def ac_focus_update(self, channel: discord.TextChannel, params: dict):
@@ -770,6 +771,7 @@ class AtCoder(commands.Cog):
             Choice(name="2hr", value=3600 * 2),
             Choice(name="3hr", value=3600 * 3),
             Choice(name="1天", value=3600 * 24),
+            Choice(name="7天", value=3600 * 24 * 7),
         ]
     )
     async def ac_focus_cmd(self, interaction: discord.Interaction, id: str, 時間: Choice[int]):
