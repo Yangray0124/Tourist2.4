@@ -1,5 +1,6 @@
 discord.py
 requests
+google-auth
 yt-dlp
 beautifulsoup4
 google-api-python-client

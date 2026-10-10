@@ -31,3 +31,25 @@ cookies.txt
 
 bs_history.json
 CURRENT_TASK.md
+
+# Local PA1 credentials: keep actual keys outside the repository.
+/credentials/
+/secrets/
+*.credentials.json
+*-service-account.json
+*.pem
+*.key
+
+# Local environment secrets, private SSH keys and internal logs.
+.env
+.env.*
+!.env.example
+!.env.sample
+!.env.template
+*.p12
+*.pfx
+*.ppk
+id_rsa
+id_ed25519
+*.log
+/logs/
