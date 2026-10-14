@@ -9,7 +9,9 @@ import requests
 import random
 from yt_dlp import YoutubeDL
 from discord import app_commands
-from typing import Optional
+from typing import Any, Optional
+from microphone_session import MicrophoneSession
+from voice_input import receive_client_class
 from discord.app_commands import Choice
 from bs4 import BeautifulSoup
 from googleapiclient.discovery import build  # google-api-python-client
@@ -26,6 +28,8 @@ def voice_dependency_problem() -> Optional[str]:
         return f"discord.py {discord.__version__} 太舊，請更新 discord.py[voice]>=2.7.1。"
     if importlib.util.find_spec("davey") is None:
         return "缺少 DAVE 語音依賴 davey，請更新 discord.py[voice]。"
+    if importlib.util.find_spec("discord.ext.voice_recv") is None:
+        return "缺少麥克風接收依賴 discord-ext-voice-recv，請更新 requirements.txt。"
     return None
 
 # 設定日誌等級為 DEBUG，並寫入到檔案
@@ -160,6 +164,12 @@ class Voice(commands.Cog):
         self.vc = None
         self.owner = None
         self.connection_lock = asyncio.Lock()
+        self.microphone_sessions: dict[int, Any] = {}
+
+    def cog_unload(self) -> None:
+        for session in self.microphone_sessions.values():
+            session.close()
+        self.microphone_sessions.clear()
 
     async def connect_voice(self, interaction: discord.Interaction) -> Optional[discord.VoiceClient]:
         guild = interaction.guild
@@ -189,7 +199,9 @@ class Voice(commands.Cog):
             try:
                 if voice is not None:
                     await voice.disconnect(force=True)
-                voice = await channel.connect(timeout=20, reconnect=False, self_deaf=True)
+                voice = await channel.connect(
+                    timeout=20, reconnect=False, self_deaf=False, cls=receive_client_class()
+                )
             except Exception as error:
                 logger.exception("[Voice] connection failed guild=%s channel=%s code=%s",
                                  guild.id, channel.id, getattr(error, "code", None))
@@ -213,6 +225,20 @@ class Voice(commands.Cog):
         await interaction.response.defer()
         voice = await self.connect_voice(interaction)
         if voice is not None:
+            if not hasattr(voice, "listen"):
+                await interaction.followup.send("目前連線不支援收音，請先 /離開，再 /加語音。")
+                return
+            session = self.microphone_sessions.get(voice.guild.id)
+            if session is None or session.closed:
+                session = MicrophoneSession(self.bot, voice)
+                try:
+                    session.start()
+                except Exception:
+                    session.close()
+                    logger.exception("[VoiceInput] cannot start microphone receiver")
+                    await interaction.followup.send("麥克風接收啟動失敗，請查看 terminal 的 [VoiceInput] 紀錄。")
+                    return
+                self.microphone_sessions[voice.guild.id] = session
             await interaction.followup.send("OK")
 
     @commands.Cog.listener()
@@ -223,6 +249,10 @@ class Voice(commands.Cog):
             return
         logger.warning("[Voice] state guild=%s channel=%s -> %s", member.guild.id,
                        getattr(before.channel, "id", None), getattr(after.channel, "id", None))
+        if before.channel is not None:
+            session = self.microphone_sessions.pop(member.guild.id, None)
+            if session is not None:
+                session.close()
 
     def safe_after(self, e, channel):
         # 使用 asyncio.create_task() 安全地執行異步函數
@@ -342,6 +372,10 @@ class Voice(commands.Cog):
         await interaction.response.defer()
 
         voice = interaction.guild.voice_client if interaction.guild is not None else None
+        if interaction.guild is not None:
+            session = self.microphone_sessions.pop(interaction.guild.id, None)
+            if session is not None:
+                session.close()
         if voice is None:
             await interaction.followup.send("?")
             return

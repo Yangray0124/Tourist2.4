@@ -24,6 +24,12 @@ class LiveReply:
     transcript: str
 
 
+def is_voice_recipient(message: Any, voice: Any) -> bool:
+    state = getattr(getattr(message, "author", None), "voice", None)
+    channel = getattr(state, "channel", None)
+    return channel is not None and channel.id == voice.channel.id
+
+
 def pcm_to_wav(pcm: bytes) -> bytes:
     if not pcm or len(pcm) % 2:
         raise ValueError("Invalid 16-bit PCM audio")

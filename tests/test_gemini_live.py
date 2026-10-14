@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, Mock, patch
 
 from gemini_live import (
     LIVE_MODEL, LIVE_SAMPLE_RATE, LiveReply, LiveVoiceError,
-    collect_live_reply, generate_live_reply, pcm_to_wav,
+    collect_live_reply, generate_live_reply, is_voice_recipient, pcm_to_wav,
 )
 
 
@@ -111,20 +111,22 @@ class DiscordVoiceTests(unittest.IsolatedAsyncioTestCase):
         self.log = Mock()
         self.voice = SimpleNamespace(
             is_connected=Mock(return_value=True), is_playing=Mock(return_value=False),
-            is_paused=Mock(return_value=False), source=None, stop=Mock(),
+            is_paused=Mock(return_value=False), source=None, stop=Mock(), channel=SimpleNamespace(id=30),
         )
         self.guild = SimpleNamespace(id=1, voice_client=self.voice)
         self.message = SimpleNamespace(guild=self.guild, channel=SimpleNamespace(id=10),
-                                       id=200, created_at=datetime.now(timezone.utc))
+                                       id=200, created_at=datetime.now(timezone.utc),
+                                       author=SimpleNamespace(voice=SimpleNamespace(channel=self.voice.channel)))
         self.cog = SimpleNamespace(
-            voice_reply_locks={}, cut_and_reply=AsyncMock(),
-            chat_memory=SimpleNamespace(record_voice_reply=Mock()),
+            voice_reply_locks={}, voice_audio_sources={}, voice_current_text={}, cut_and_reply=AsyncMock(),
+            chat_memory=SimpleNamespace(record_voice_reply=Mock(), record_room_turn=Mock()),
         )
         self.namespace: dict[str, Any] = {
             "discord": SimpleNamespace(Message=object, AudioSource=object, HTTPException=RuntimeError,
                                        FFmpegOpusAudio=Mock(return_value=self.source)),
             "Any": Any, "Optional": __import__("typing").Optional, "asyncio": asyncio,
             "generate_live_reply": self.live, "gemini_api_key": "test-key",
+            "is_voice_recipient": is_voice_recipient,
             "LIVE_MODEL": LIVE_MODEL, "LIVE_SAMPLE_RATE": LIVE_SAMPLE_RATE,
             "DEFAULT_LIVE_VOICE": "Fenrir",
             "LiveVoiceError": LiveVoiceError, "pcm_to_wav": pcm_to_wav,
@@ -160,6 +162,36 @@ class DiscordVoiceTests(unittest.IsolatedAsyncioTestCase):
         self.live.side_effect = LiveVoiceError("HTTP 503")
         self.assertFalse(await self.namespace["speak_with_live"](self.cog, self.message, {}))
         self.log.assert_called_once_with(LIVE_MODEL, False, "HTTP 503", "voice")
+
+    async def test_user_outside_voice_does_not_trigger_live(self) -> None:
+        self.message.author.voice = None
+        self.assertFalse(await self.namespace["speak_with_live"](self.cog, self.message, {}))
+        self.live.assert_not_awaited()
+
+    async def test_many_voice_requests_wait_for_previous_playback(self) -> None:
+        started = asyncio.Event()
+        completions: list[Any] = []
+
+        def play(source: Any, *, after: Any) -> None:
+            self.voice.source = source
+            self.voice.is_playing.return_value = True
+            completions.append(after)
+            started.set()
+            if len(completions) == 2:
+                self.voice.is_playing.return_value = False
+                after(None)
+
+        self.voice.play = Mock(side_effect=play)
+        first = asyncio.create_task(self.namespace["speak_with_live"](self.cog, self.message, {}))
+        await started.wait()
+        second = asyncio.create_task(self.namespace["speak_with_live"](self.cog, self.message, {}))
+        await asyncio.sleep(0)
+        self.assertEqual(self.live.await_count, 1)
+        self.voice.is_playing.return_value = False
+        completions[0](None)
+        self.assertEqual(await asyncio.gather(first, second), [True, True])
+        self.assertEqual(self.voice.play.call_count, 2)
+        self.assertEqual(self.cog.voice_audio_sources, {})
 
 
 if __name__ == "__main__":

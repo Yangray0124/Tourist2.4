@@ -42,6 +42,11 @@ class ChatMemory:
                     created_at TEXT NOT NULL, content TEXT NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS voice_replies_channel ON voice_replies(channel_id, trigger_id);
+                CREATE TABLE IF NOT EXISTS voice_room_turns (
+                    id INTEGER PRIMARY KEY, channel_id INTEGER NOT NULL,
+                    speaker TEXT NOT NULL, created_at TEXT NOT NULL, content TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS voice_room_channel ON voice_room_turns(channel_id, id);
                 CREATE TABLE IF NOT EXISTS archives (
                     id INTEGER PRIMARY KEY, channel_id INTEGER NOT NULL,
                     first_id INTEGER NOT NULL, last_id INTEGER NOT NULL,
@@ -115,6 +120,24 @@ class ChatMemory:
             lines.append(line)
             remaining -= len(line) + 1
         return "\n".join(reversed(lines))
+
+    def record_room_turn(self, channel_id: int, speaker: str, created_at: str, content: str) -> None:
+        if content.strip():
+            with self.connect() as db:
+                db.execute(
+                    "INSERT INTO voice_room_turns(channel_id, speaker, created_at, content) VALUES (?, ?, ?, ?)",
+                    (channel_id, speaker, created_at, content),
+                )
+
+    def room_history(self, channel_id: int) -> str:
+        with self.connect() as db:
+            rows = db.execute(
+                "SELECT speaker, created_at, content FROM voice_room_turns WHERE channel_id = ? "
+                "ORDER BY id DESC LIMIT ?", (channel_id, RECENT_MESSAGE_LIMIT)
+            ).fetchall()
+        return "\n".join(
+            f"[{row['created_at']}] {row['speaker']}: {row['content']}" for row in reversed(rows)
+        )[-12000:]
 
     def pending_batches(self, channel_id: int | None = None) -> list[list[dict[str, Any]]]:
         """Keep the recent window verbatim; summarize up to 100 older messages."""

@@ -15,6 +15,18 @@ from chat_memory import ChatMemory
 
 
 class MemoryTests(unittest.TestCase):
+    def test_microphone_conversation_keeps_speaker_identity_and_room_scope(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as folder:
+            store = ChatMemory(Path(folder) / "memory.sqlite3")
+            store.record_room_turn(30, "Alice (1)", "today", "Quiz me in English.")
+            store.record_room_turn(30, "Tourist", "today", "What time is it?")
+            store.record_room_turn(40, "Bob (2)", "today", "different room")
+            reopened = ChatMemory(store.path)
+            self.assertIn("Alice (1)", reopened.room_history(30))
+            self.assertIn("What time", reopened.room_history(30))
+            self.assertNotIn("different room", reopened.room_history(30))
+            self.assertNotIn("Alice", reopened.room_history(40))
+
     def test_private_voice_context_is_persistent_and_channel_scoped(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as folder:
             store = ChatMemory(Path(folder) / "memory.sqlite3")

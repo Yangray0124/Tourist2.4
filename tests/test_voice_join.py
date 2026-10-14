@@ -23,6 +23,9 @@ class VoiceJoinTests(unittest.IsolatedAsyncioTestCase):
             "discord": SimpleNamespace(Interaction=object, VoiceClient=object, TextChannel=object,
                                        __version__="2.7.1", Status=SimpleNamespace(idle="idle"), Game=Mock()),
             "commands": SimpleNamespace(Bot=object),
+            "receive_client_class": Mock(return_value=object),
+            "MicrophoneSession": Mock(return_value=SimpleNamespace(start=Mock(), close=Mock(), closed=False)),
+            "Any": Any,
         }
         exec(compile(ast.fix_missing_locations(ast.Module(body=[cls], type_ignores=[])),
                      "voice-join", "exec"), self.namespace)
@@ -32,7 +35,7 @@ class VoiceJoinTests(unittest.IsolatedAsyncioTestCase):
                                        permissions_for=Mock(return_value=SimpleNamespace(connect=True, speak=True)))
         self.guild = SimpleNamespace(id=1, me=object(), voice_client=None)
         self.voice = SimpleNamespace(channel=self.channel, is_connected=Mock(return_value=True),
-                                     disconnect=AsyncMock(), play=Mock())
+                                     disconnect=AsyncMock(), play=Mock(), guild=self.guild, listen=Mock())
         self.interaction = SimpleNamespace(
             guild=self.guild, user=SimpleNamespace(voice=SimpleNamespace(channel=self.channel)),
             response=SimpleNamespace(defer=AsyncMock()), followup=SimpleNamespace(send=AsyncMock()),
@@ -47,7 +50,7 @@ class VoiceJoinTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_join_connects_once_without_music(self) -> None:
         await self.cog.join_voice(self.interaction)
-        self.channel.connect.assert_awaited_once_with(timeout=20, reconnect=False, self_deaf=True)
+        self.channel.connect.assert_awaited_once_with(timeout=20, reconnect=False, self_deaf=False, cls=object)
         self.voice.play.assert_not_called()
         self.assertEqual(self.namespace["queue"], [])
         self.interaction.followup.send.assert_awaited_once_with("OK")

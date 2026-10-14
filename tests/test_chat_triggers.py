@@ -8,6 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, AsyncIterator
 from unittest.mock import AsyncMock, Mock
+from gemini_live import is_voice_recipient
 
 
 class ChatTriggerTests(unittest.IsolatedAsyncioTestCase):
@@ -25,6 +26,7 @@ class ChatTriggerTests(unittest.IsolatedAsyncioTestCase):
             "build_chat_prompt": self.history,
             "prompt": "依使用者指定語言：", "logger": logging.getLogger("test"),
             "js": {"contents": [{"parts": [{"text": ""}]}]},
+            "is_voice_recipient": is_voice_recipient,
         }
         exec(compile(ast.Module(body=[handler], type_ignores=[]), "chat-trigger", "exec"), self.namespace)
         self.cog = SimpleNamespace(
@@ -64,12 +66,15 @@ class ChatTriggerTests(unittest.IsolatedAsyncioTestCase):
         await self.namespace["on_message"](self.cog, self.message)
         self.history.assert_awaited_once_with(self.message, 100, self.cog.chat_memory)
         self.cog.reply_with_gemini.assert_awaited_once()
-        self.assertTrue(self.cog.reply_with_gemini.call_args.kwargs["speak"])
+        self.assertFalse(self.cog.reply_with_gemini.call_args.kwargs["speak"])
         await asyncio.sleep(0)
         self.cog.compress_chat_memory.assert_awaited_once_with(10)
 
     async def test_tagged_identity_question_in_voice_uses_ai_speech(self) -> None:
-        self.message.guild = SimpleNamespace(voice_client=SimpleNamespace(is_connected=Mock(return_value=True)))
+        channel = SimpleNamespace(id=30)
+        self.message.guild = SimpleNamespace(voice_client=SimpleNamespace(
+            is_connected=Mock(return_value=True), channel=channel))
+        self.message.author.voice = SimpleNamespace(channel=channel)
         self.message.mentions = [self.cog.bot.user]
         self.message.content = "<@100> 你是誰"
         self.roll.return_value = 0.999
