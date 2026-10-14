@@ -35,6 +35,7 @@ CURRENT_TASK.md
 # Local runtime status and generated map.
 /status.txt
 /img/newmap.png
+/data/chat_memory.sqlite3*
 
 # Local PA1 credentials: keep actual keys outside the repository.
 /credentials/

@@ -1,4 +1,5 @@
 import asyncio
+import importlib.util
 import os
 import re
 import discord
@@ -16,6 +17,16 @@ from keys import yt_api_key
 import platform
 
 import logging
+logger = logging.getLogger(__name__)
+
+
+def voice_dependency_problem() -> Optional[str]:
+    version = discord.version_info
+    if (version.major, version.minor, version.micro) < (2, 7, 1):
+        return f"discord.py {discord.__version__} 太舊，請更新 discord.py[voice]>=2.7.1。"
+    if importlib.util.find_spec("davey") is None:
+        return "缺少 DAVE 語音依賴 davey，請更新 discord.py[voice]。"
+    return None
 
 # 設定日誌等級為 DEBUG，並寫入到檔案
 # logging.basicConfig(
@@ -144,16 +155,82 @@ def search_yt(url: str):
 
 class Voice(commands.Cog):
 
-    def __init__(self, bot: commands.Bot):
+    def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
         self.vc = None
         self.owner = None
+        self.connection_lock = asyncio.Lock()
+
+    async def connect_voice(self, interaction: discord.Interaction) -> Optional[discord.VoiceClient]:
+        guild = interaction.guild
+        state = getattr(interaction.user, "voice", None)
+        if guild is None or state is None or state.channel is None:
+            await interaction.followup.send("你先進伺服器的語音頻道。")
+            return None
+        channel = state.channel
+        async with self.connection_lock:
+            voice = guild.voice_client
+            if voice is not None and voice.is_connected():
+                if voice.channel.id != channel.id:
+                    await interaction.followup.send(f"Tourist 已在 {voice.channel.mention}，請先使用 /離開。")
+                    return None
+                return voice
+            problem = voice_dependency_problem()
+            if problem:
+                logger.error("[Voice] guild=%s dependency check failed: %s", guild.id, problem)
+                await interaction.followup.send(problem + "\n請在 bot 環境執行：python -m pip install -U -r requirements.txt")
+                return None
+            permissions = channel.permissions_for(guild.me)
+            if not permissions.connect or not permissions.speak:
+                await interaction.followup.send("Tourist 需要這個頻道的「連線」與「說話」權限。")
+                return None
+            logger.warning("[Voice] connecting guild=%s channel=%s discord.py=%s reconnect=False",
+                           guild.id, channel.id, discord.__version__)
+            try:
+                if voice is not None:
+                    await voice.disconnect(force=True)
+                voice = await channel.connect(timeout=20, reconnect=False, self_deaf=True)
+            except Exception as error:
+                logger.exception("[Voice] connection failed guild=%s channel=%s code=%s",
+                                 guild.id, channel.id, getattr(error, "code", None))
+                stale = guild.voice_client
+                if stale is not None:
+                    try:
+                        await stale.disconnect(force=True)
+                    except Exception:
+                        logger.exception("[Voice] failed to clean up connection guild=%s", guild.id)
+                await interaction.followup.send(
+                    f"語音連線失敗（{type(error).__name__}，code={getattr(error, 'code', '無')}）。"
+                    "已停止重試，請查看 terminal 的 [Voice] 紀錄。"
+                )
+                return None
+            logger.warning("[Voice] connected guild=%s channel=%s", guild.id, channel.id)
+            return voice
+
+    @app_commands.command(name="加語音", description="加入你的語音頻道，不播放音樂")
+    @app_commands.guild_only()
+    async def join_voice(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer()
+        voice = await self.connect_voice(interaction)
+        if voice is not None:
+            await interaction.followup.send("OK")
+
+    @commands.Cog.listener()
+    async def on_voice_state_update(
+        self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState
+    ) -> None:
+        if self.bot.user is None or member.id != self.bot.user.id or before.channel == after.channel:
+            return
+        logger.warning("[Voice] state guild=%s channel=%s -> %s", member.guild.id,
+                       getattr(before.channel, "id", None), getattr(after.channel, "id", None))
 
     def safe_after(self, e, channel):
         # 使用 asyncio.create_task() 安全地執行異步函數
         asyncio.create_task(self.next(channel))
 
-    async def next(self, channel: discord.TextChannel):
+    async def next(self, channel: discord.TextChannel) -> None:
+        if not queue or self.vc is None:
+            return
         # print("next", len(queue))
 
         if queue[0]["loop"]: # 循環播放
@@ -260,11 +337,12 @@ class Voice(commands.Cog):
         await interaction.followup.send(f"加入隊列成功： [{m_title}]({yt_url})")
 
     @app_commands.command(name="離開", description="掰掰")
-    async def leave(self, interaction: discord.Interaction):
+    async def leave(self, interaction: discord.Interaction) -> None:
 
         await interaction.response.defer()
 
-        if self.vc is None:
+        voice = interaction.guild.voice_client if interaction.guild is not None else None
+        if voice is None:
             await interaction.followup.send("?")
             return
         #
@@ -272,10 +350,11 @@ class Voice(commands.Cog):
         #     await interaction.response.send_message("你目前不能控制Tourist唷！")
         #     return
 
-        self.owner = None
-        await self.vc.disconnect()
-        self.vc = None
-        queue.clear()
+        if self.vc is voice:
+            self.owner = None
+            self.vc = None
+            queue.clear()
+        await voice.disconnect(force=True)
         await interaction.followup.send("掰掰")
         game = get_act()
         await self.bot.change_presence(status=discord.Status.idle, activity=discord.Game(game))
