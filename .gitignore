@@ -32,6 +32,10 @@ cookies.txt
 bs_history.json
 CURRENT_TASK.md
 
+# Local runtime status and generated map.
+/status.txt
+/img/newmap.png
+
 # Local PA1 credentials: keep actual keys outside the repository.
 /credentials/
 /secrets/
