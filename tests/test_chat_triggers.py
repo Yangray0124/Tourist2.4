@@ -116,6 +116,53 @@ class ChatTriggerTests(unittest.IsolatedAsyncioTestCase):
         self.message.channel.history.assert_called_once_with(limit=20, before=self.message, oldest_first=False)
         memory.voice_history.assert_called_once_with(10, 200)
 
+    async def reply_prompt(self, target: Any, channel_id: int = 10) -> str:
+        tree = ast.parse(Path("cogs/chat.py").read_text(encoding="utf-8"))
+        nodes = [node for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                 and node.name in {"persist_chat_snapshot", "build_chat_prompt"}]
+        async def empty_history() -> AsyncIterator[Any]:
+            if False:
+                yield None
+        self.message.created_at = datetime.now(timezone.utc)
+        self.message.reference = SimpleNamespace(message_id=150, channel_id=channel_id, resolved=target)
+        self.message.channel.history = Mock(side_effect=lambda **kwargs: empty_history())
+        namespace = {
+            "discord": SimpleNamespace(Message=object, HTTPException=RuntimeError),
+            "ChatMemory": object, "asyncio": asyncio, "logger": Mock(),
+            "CHAT_CONTEXT_MESSAGES": 20, "CHAT_CONTEXT_CHARACTERS": 24000,
+        }
+        exec(compile(ast.Module(body=nodes, type_ignores=[]), "chat-context", "exec"), namespace)
+        return await namespace["build_chat_prompt"](
+            self.message, 100, SimpleNamespace(record=Mock(), voice_history=Mock(return_value="")))
+
+    def reply_target(self) -> Any:
+        return SimpleNamespace(id=150, clean_content="很久以前的問題", attachments=[],
+                               author=SimpleNamespace(id=2, display_name="Bob", bot=True))
+
+    async def test_cached_reply_outside_recent_history_is_included(self) -> None:
+        self.message.channel.fetch_message = AsyncMock()
+        prompt = await self.reply_prompt(self.reply_target())
+        self.assertIn("Bob (2): 很久以前的問題", prompt)
+        self.message.channel.fetch_message.assert_not_awaited()
+
+    async def test_uncached_reply_is_fetched_by_id(self) -> None:
+        self.message.channel.fetch_message = AsyncMock(return_value=self.reply_target())
+        prompt = await self.reply_prompt(None)
+        self.assertIn("很久以前的問題", prompt)
+        self.message.channel.fetch_message.assert_awaited_once_with(150)
+
+    async def test_deleted_reply_keeps_current_question(self) -> None:
+        self.message.channel.fetch_message = AsyncMock(side_effect=RuntimeError("deleted"))
+        prompt = await self.reply_prompt(None)
+        self.assertIn("無法讀取", prompt)
+        self.assertIn(self.message.clean_content, prompt)
+
+    async def test_cross_channel_reply_is_not_fetched(self) -> None:
+        self.message.channel.fetch_message = AsyncMock()
+        prompt = await self.reply_prompt(self.reply_target(), channel_id=99)
+        self.assertNotIn("很久以前的問題", prompt)
+        self.message.channel.fetch_message.assert_not_awaited()
+
 
 if __name__ == "__main__":
     unittest.main()

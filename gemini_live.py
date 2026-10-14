@@ -88,7 +88,11 @@ async def generate_live_reply(
             "system_instruction": instruction + (
                 "\n請依使用者要求及之前對話的活動情境，自然地說話。"
                 "語言依使用者指定，可說英文或其他語言；不要自行附帶翻譯。"
-                "未指定長度時回答簡短。"
+                "回答的完整程度應與文字聊天相同，依問題提供足夠的內容、解釋及必要步驟。"
+                "在這一次語音回覆中把當前問題完整說完，不要只講開頭或一小段就停下來。"
+                "不要用『要我繼續嗎』或不必要的反問，把本來可以直接回答的內容拆成多輪。"
+                "只有缺少必要資訊，或使用者明確要求互動問答、逐題練習、英聽測驗時，"
+                "才提出問題並等待回覆；若使用者要求簡短，則依要求縮短。"
             ),
             "temperature": payload.get("generationConfig", {}).get("temperature", 1.6),
             "thinking_config": {"thinking_level": "minimal"},
