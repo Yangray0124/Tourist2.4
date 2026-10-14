@@ -8,7 +8,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
-RECENT_MESSAGE_LIMIT = 20
+RECENT_MESSAGE_LIMIT = 50
 
 
 def search_tokens(text: str) -> str:

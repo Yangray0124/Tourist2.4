@@ -41,7 +41,7 @@ class MemoryTests(unittest.TestCase):
     def test_archive_retrieval_and_channel_isolation(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as folder:
             store = ChatMemory(Path(folder) / "memory.sqlite3")
-            for index in range(1, 121):
+            for index in range(1, 151):
                 store.record(index, 10, "Alice (1)", "2026-10-14", f"週六聚餐餐廳地址 {index}")
             batch = store.pending_batches()[0]
             self.assertEqual(len(batch), 100)
@@ -55,7 +55,7 @@ class MemoryTests(unittest.TestCase):
             with reopened.connect() as db:
                 packed = db.execute("SELECT original FROM archives").fetchone()[0]
                 self.assertEqual(json.loads(zlib.decompress(packed)), batch)
-                self.assertEqual(db.execute("SELECT COUNT(*) FROM messages").fetchone()[0], 21)
+                self.assertEqual(db.execute("SELECT COUNT(*) FROM messages").fetchone()[0], 51)
                 self.assertEqual(db.execute("SELECT content FROM messages WHERE id=1").fetchone()[0],
                                  "週六聚餐餐廳地址 1")
             self.assertEqual(reopened.pending_batches(), [])

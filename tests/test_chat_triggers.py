@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from typing import Any, AsyncIterator
 from unittest.mock import AsyncMock, Mock
 from gemini_live import is_voice_recipient
+from chat_memory import RECENT_MESSAGE_LIMIT
 
 
 class ChatTriggerTests(unittest.IsolatedAsyncioTestCase):
@@ -136,14 +137,14 @@ class ChatTriggerTests(unittest.IsolatedAsyncioTestCase):
         namespace = {
             "discord": SimpleNamespace(Message=object, HTTPException=RuntimeError),
             "ChatMemory": object, "asyncio": asyncio, "logger": Mock(),
-            "CHAT_CONTEXT_MESSAGES": 20, "CHAT_CONTEXT_CHARACTERS": 24000,
+            "CHAT_CONTEXT_MESSAGES": RECENT_MESSAGE_LIMIT, "CHAT_CONTEXT_CHARACTERS": 24000,
         }
         exec(compile(ast.Module(body=nodes, type_ignores=[]), "chat-context", "exec"), namespace)
         prompt = await namespace["build_chat_prompt"](self.message, 100, memory)
         self.assertIn("Quiz me in English.", prompt)
         self.assertIn("What time does the train leave?", prompt)
         self.assertIn("Repeat the last question in English.", prompt)
-        self.message.channel.history.assert_called_once_with(limit=20, before=self.message, oldest_first=False)
+        self.message.channel.history.assert_called_once_with(limit=50, before=self.message, oldest_first=False)
         memory.voice_history.assert_called_once_with(10, 200)
 
     async def reply_prompt(self, target: Any, channel_id: int = 10) -> str:
@@ -159,7 +160,7 @@ class ChatTriggerTests(unittest.IsolatedAsyncioTestCase):
         namespace = {
             "discord": SimpleNamespace(Message=object, HTTPException=RuntimeError),
             "ChatMemory": object, "asyncio": asyncio, "logger": Mock(),
-            "CHAT_CONTEXT_MESSAGES": 20, "CHAT_CONTEXT_CHARACTERS": 24000,
+            "CHAT_CONTEXT_MESSAGES": RECENT_MESSAGE_LIMIT, "CHAT_CONTEXT_CHARACTERS": 24000,
         }
         exec(compile(ast.Module(body=nodes, type_ignores=[]), "chat-context", "exec"), namespace)
         return await namespace["build_chat_prompt"](
