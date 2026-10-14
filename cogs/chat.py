@@ -1894,9 +1894,9 @@ class Chat(commands.Cog):
             } and len(message.attachments) == 0:
                 await message.reply("怎樣")
 
-            elif tagged and not voice_mode and ("是誰" in message.content or "你誰" in message.content):
-                await msc.send("我是tourist")
-                await message.add_reaction('\N{waVing hand sign}')
+            # elif tagged and not voice_mode and ("是誰" in message.content or "你誰" in message.content):
+            #     await msc.send("我是tourist")
+            #     await message.add_reaction('\N{waVing hand sign}')
 
             elif tagged and not voice_mode and "打招呼" in message.content:
                 await msc.send("早安!!")
