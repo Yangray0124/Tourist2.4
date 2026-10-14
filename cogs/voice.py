@@ -307,7 +307,7 @@ class Voice(commands.Cog):
             Choice(name="否", value=0),
         ]
     )
-    async def play(self, interaction: discord.Interaction, 關鍵字或網址: str, 循環播放: Choice[int]):
+    async def play(self, interaction: discord.Interaction, 關鍵字或網址: str, 循環播放: Choice[int]) -> None:
         print("try to play: "+關鍵字或網址)
         # print(os.listdir("."))
         # print(os.listdir("bin/"))
@@ -317,16 +317,10 @@ class Voice(commands.Cog):
             await interaction.followup.send("你先進語音")
             return
 
-        if self.vc is None:
-            try:
-                self.vc = await interaction.user.voice.channel.connect()
-                # await interaction.channel.send(f"我來了")
-            except discord.ClientException as e:
-                await interaction.followup.send(f"無法連接到語音頻道：{e}\n @Liquan 修一下")
-                return
-            except Exception as e:
-                await interaction.followup.send(f"發生未知錯誤：{e}\n @Liquan 修一下")
-                return
+        voice = await self.connect_voice(interaction)
+        if voice is None:
+            return
+        self.vc = voice
 
         if self.owner is None:
             self.owner = interaction.user
@@ -407,7 +401,7 @@ class Voice(commands.Cog):
         #     return
 
         queue[0]["loop"] = False
-        self.vc.stop()
+        getattr(self.vc, "stop_playing", self.vc.stop)()
         # queue.pop(0)
 
         # if len(queue) == 1:

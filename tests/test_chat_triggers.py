@@ -21,7 +21,7 @@ class ChatTriggerTests(unittest.IsolatedAsyncioTestCase):
         self.history = AsyncMock(return_value="tagged history")
         self.roll = Mock(return_value=0.5)
         self.namespace: dict[str, Any] = {
-            "discord": SimpleNamespace(Message=object), "asyncio": asyncio,
+            "discord": SimpleNamespace(Message=object, HTTPException=RuntimeError), "asyncio": asyncio,
             "random": SimpleNamespace(random=self.roll), "copy": copy,
             "build_chat_prompt": self.history,
             "prompt": "依使用者指定語言：", "logger": logging.getLogger("test"),
@@ -69,6 +69,36 @@ class ChatTriggerTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.cog.reply_with_gemini.call_args.kwargs["speak"])
         await asyncio.sleep(0)
         self.cog.compress_chat_memory.assert_awaited_once_with(10)
+
+    async def test_reply_to_tourist_triggers_without_mention(self) -> None:
+        self.message.reference = SimpleNamespace(message_id=150, channel_id=10,
+            resolved=SimpleNamespace(author=self.cog.bot.user))
+        await self.namespace["on_message"](self.cog, self.message)
+        self.history.assert_awaited_once()
+        self.cog.reply_with_gemini.assert_awaited_once()
+        await asyncio.sleep(0)
+
+    async def test_uncached_reply_to_tourist_triggers(self) -> None:
+        self.message.reference = SimpleNamespace(message_id=150, channel_id=10, resolved=None)
+        self.message.channel.fetch_message = AsyncMock(return_value=SimpleNamespace(author=self.cog.bot.user))
+        await self.namespace["on_message"](self.cog, self.message)
+        self.message.channel.fetch_message.assert_awaited_once_with(150)
+        self.cog.reply_with_gemini.assert_awaited_once()
+        await asyncio.sleep(0)
+
+    async def test_reply_to_other_person_does_not_trigger(self) -> None:
+        self.message.reference = SimpleNamespace(message_id=150, channel_id=10,
+            resolved=SimpleNamespace(author=SimpleNamespace(id=999)))
+        await self.namespace["on_message"](self.cog, self.message)
+        self.cog.reply_with_gemini.assert_not_awaited()
+        self.history.assert_not_awaited()
+
+    async def test_unreadable_reply_does_not_trigger(self) -> None:
+        self.message.reference = SimpleNamespace(message_id=150, channel_id=10, resolved=None)
+        self.message.channel.fetch_message = AsyncMock(side_effect=RuntimeError("deleted"))
+        await self.namespace["on_message"](self.cog, self.message)
+        self.cog.reply_with_gemini.assert_not_awaited()
+        self.history.assert_not_awaited()
 
     async def test_tagged_identity_question_in_voice_uses_ai_speech(self) -> None:
         channel = SimpleNamespace(id=30)

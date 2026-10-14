@@ -40,6 +40,7 @@
 
 ## AI 聊天與頻道記憶（2026/10/14）
 
+- 文字 AI 問答可用 tag Tourist，或直接回覆 Tourist 的訊息（關閉回覆通知也可）；兩者都讀同頻道近期訊息與被回覆內容。回覆其他人的訊息仍需 tag；同語音頻道用語音回答，其餘回文字。
 - 先進入伺服器的語音頻道，執行 `/加語音`，Tourist 會加入但不播音樂，成功只回覆 `OK`；然後在文字頻道 tag Tourist 即可語音問答，使用 `/離開` 結束。已在同一語音頻道時沿用連線，不自動跨頻道移動。加入時檢查 Connect／Speak、discord.py 版本與 DAVE 依賴，20 秒 timeout、不自動重連；Terminal 的 `[Voice]` 紀錄包含語音狀態、成功／失敗與 WebSocket code。
 - 語音套件要求 `discord.py[voice]>=2.7.1,<3`、`discord-ext-voice-recv==0.5.2a179`，包含 davey；在 bot 實際 Python 環境執行 `python -m pip install -U -r requirements.txt`，再重啟 bot 同步 slash commands。可用 `python -m discord --version` 檢查語音依賴。更新後先 `/離開` 再 `/加語音`，建立支援收音的連線。`/唱歌` 的 YouTube 搜尋／播放流程依使用者要求暫不處理；反覆進出原因尚未在故障主機確認。
 

@@ -12,13 +12,14 @@ class VoiceJoinTests(unittest.IsolatedAsyncioTestCase):
         tree = ast.parse(Path("cogs/voice.py").read_text(encoding="utf-8"))
         voice = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "Voice")
         methods = [node for node in voice.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-                   and node.name in {"__init__", "connect_voice", "join_voice", "leave", "next"}]
+                   and node.name in {"__init__", "connect_voice", "join_voice", "leave", "next", "play"}]
         for method in methods:
             method.decorator_list = []
         cls = ast.ClassDef(name="Voice", bases=[], keywords=[], body=methods, decorator_list=[])
         self.dependencies = Mock(return_value=None)
         self.namespace: dict[str, Any] = {
             "asyncio": asyncio, "Optional": Optional, "logger": Mock(), "queue": [],
+            "Choice": list, "search_yt": Mock(return_value=(None, None, None)),
             "get_act": Mock(return_value="game"), "voice_dependency_problem": self.dependencies,
             "discord": SimpleNamespace(Interaction=object, VoiceClient=object, TextChannel=object,
                                        __version__="2.7.1", Status=SimpleNamespace(idle="idle"), Game=Mock()),
@@ -91,6 +92,31 @@ class VoiceJoinTests(unittest.IsolatedAsyncioTestCase):
         await self.cog.leave(self.interaction)
         self.voice.disconnect.assert_awaited_once_with(force=True)
         await self.cog.next(SimpleNamespace())
+
+    async def test_song_reuses_standalone_voice_connection(self) -> None:
+        self.guild.voice_client = self.voice
+        self.assertIsNone(self.cog.vc)
+        await self.cog.play(self.interaction, "song", SimpleNamespace(value=0))
+        self.assertIs(self.cog.vc, self.voice)
+        self.channel.connect.assert_not_awaited()
+        self.voice.disconnect.assert_not_awaited()
+        self.namespace["search_yt"].assert_called_once_with("song")
+
+    async def test_song_does_not_use_stale_cached_connection(self) -> None:
+        stale = SimpleNamespace()
+        self.cog.vc = stale
+        self.guild.voice_client = self.voice
+        await self.cog.play(self.interaction, "song", SimpleNamespace(value=0))
+        self.assertIs(self.cog.vc, self.voice)
+        self.channel.connect.assert_not_awaited()
+
+    async def test_song_in_other_channel_does_not_search_or_move(self) -> None:
+        self.guild.voice_client = self.voice
+        self.voice.channel = SimpleNamespace(id=20, mention="<#20>")
+        await self.cog.play(self.interaction, "song", SimpleNamespace(value=0))
+        self.namespace["search_yt"].assert_not_called()
+        self.channel.connect.assert_not_awaited()
+        self.voice.disconnect.assert_not_awaited()
 
 
 class VoiceDependencyTests(unittest.TestCase):

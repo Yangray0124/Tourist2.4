@@ -1870,6 +1870,19 @@ class Chat(commands.Cog):
             await msc.send(file=discord.File("img/fork.jpg"))
 
         tagged = any(mention.id == self.bot.application_id for mention in message.mentions)
+        if not tagged:
+            reference = getattr(message, "reference", None)
+            if (reference is not None and reference.message_id is not None
+                    and reference.channel_id == message.channel.id):
+                target = getattr(reference, "resolved", None)
+                if target is None or not hasattr(target, "author"):
+                    try:
+                        target = await message.channel.fetch_message(reference.message_id)
+                    except discord.HTTPException:
+                        logger.exception("Cannot resolve reply trigger %s in channel %s",
+                                         reference.message_id, message.channel.id)
+                        target = None
+                tagged = target is not None and target.author.id == self.bot.user.id
         voice_mode = (
             tagged and message.guild is not None and message.guild.voice_client is not None
             and message.guild.voice_client.is_connected()
